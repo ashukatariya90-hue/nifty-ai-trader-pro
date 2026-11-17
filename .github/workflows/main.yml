@@ -42,25 +42,37 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Fix Java and Kotlin targets
+      - name: Fix Android source and JVM targets
         run: |
           cd "$PROJECT_DIR"
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path("app/build.gradle.kts")
           s = p.read_text()
-          s = s.replace(
-              '    defaultConfig {',
-              '''    compileOptions {
+          if "compileOptions" not in s:
+              s = s.replace(
+                  "    defaultConfig {",
+                  """    compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
               }
               kotlinOptions {
                   jvmTarget = "17"
               }
-              defaultConfig {'''
-          )
+              defaultConfig {"""
+              )
           p.write_text(s)
+
+          m = Path("app/src/main/java/com/example/niftyaitrader/MainActivity.kt")
+          code = m.read_text()
+          imp = "import androidx.compose.runtime.Composable"
+          if imp not in code:
+              code = code.replace(
+                  "package com.example.niftyaitrader",
+                  "package com.example.niftyaitrader\n\n" + imp
+              )
+          m.write_text(code)
           PY
 
       - name: Build debug APK
