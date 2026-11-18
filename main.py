@@ -2,11 +2,19 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from .paper import PaperLedger
+from .analysis import analyze_closes, ema_crossover_backtest
 from .providers.angel_one import AngelOneMarketDataAdapter
 
-app = FastAPI(title="NIFTY AI TRADER PRO — Paper Trading", version="1.0.0")
+app = FastAPI(title="NIFTY AI TRADER PRO — Paper Trading", version="3.0.0")
 ledger = PaperLedger(500000)
 angel = AngelOneMarketDataAdapter()
+
+class CloseSeries(BaseModel):
+    close_prices: list[float] = Field(min_length=1, max_length=10000)
+
+class BacktestRequest(BaseModel):
+    close_prices: list[float] = Field(min_length=30, max_length=10000)
+    fee_bps: float = Field(default=5.0, ge=0, le=100)
 
 class PaperOrder(BaseModel):
     side: str
@@ -26,6 +34,21 @@ async def provider_status():
 async def market():
     return {"symbol": "NIFTY", "value": None, "source": "NO_LIVE_FEED",
             "note": "Live feed is not configured; no synthetic value is labelled as live."}
+
+
+@app.post("/api/analysis/indicators")
+async def indicators(data: CloseSeries):
+    try:
+        return analyze_closes(data.close_prices)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/backtest/ema-crossover")
+async def backtest(data: BacktestRequest):
+    try:
+        return ema_crossover_backtest(data.close_prices, data.fee_bps)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.get("/api/paper/ledger")
 async def get_ledger():

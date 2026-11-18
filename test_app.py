@@ -22,3 +22,19 @@ def test_paper_order():
     r = client.post("/api/paper/order", json={"side":"BUY","quantity":1,"reference_price":100})
     assert r.status_code == 200
     assert r.json()["status"] == "SIMULATED_ONLY"
+
+
+def test_indicator_analysis_is_not_trade_signal():
+    prices = [100 + i * 0.4 for i in range(30)]
+    r = client.post("/api/analysis/indicators", json={"close_prices": prices})
+    assert r.status_code == 200
+    assert r.json()["is_trade_signal"] is False
+    assert r.json()["ema_9"] is not None
+
+
+def test_backtest_requires_enough_data_and_lags_signals():
+    prices = [100 + i * 0.2 for i in range(40)]
+    r = client.post("/api/backtest/ema-crossover", json={"close_prices": prices})
+    assert r.status_code == 200
+    assert "bar t" in r.json()["lookahead_control"]
+    assert r.json()["is_investment_advice"] is False
