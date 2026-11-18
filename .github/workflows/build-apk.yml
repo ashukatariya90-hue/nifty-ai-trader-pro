@@ -19,7 +19,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="NIFTY_AI_TRADER_PRO_V5_1_INTEGRATION_READY.zip"
+          ZIP_FILE="NIFTY_AI_TRADER_PRO_V5_4_HISTORICAL_ANALYSIS.zip"
           if [ ! -f "$ZIP_FILE" ]; then
             echo "::error::Upload $ZIP_FILE to the repository root first."
             exit 1
