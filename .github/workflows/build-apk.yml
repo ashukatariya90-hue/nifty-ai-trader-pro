@@ -20,7 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="NIFTY_AI_TRADER_PRO_V3_READY_TO_UPLOAD.zip"
+          ZIP_FILE="NIFTY_AI_TRADER_PRO_V3_JVM17_FIXED.zip"
           test -f "$ZIP_FILE" || {
             echo "Missing $ZIP_FILE. Upload the ZIP to the repository root first."
             exit 1
