@@ -1,10 +1,9 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from .paper import PaperLedger
-from .analysis import analyze_closes, ema_crossover_backtest
-from .providers.angel_one import AngelOneMarketDataAdapter
-
+from paper import PaperLedger
+from analysis import analyze_closes, ema_crossover_backtest
+from angel_one import AngelOneMarketDataAdapter
 app = FastAPI(title="NIFTY AI TRADER PRO — Paper Trading", version="3.0.0")
 ledger = PaperLedger(500000)
 angel = AngelOneMarketDataAdapter()
