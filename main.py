@@ -1,12 +1,37 @@
-from fastapi import FastAPI, HTTPException
+from datetime import datetime, timezone
+from math import isfinite
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+
 from paper import PaperLedger
 from analysis import analyze_closes, ema_crossover_backtest
 from angel_one import AngelOneMarketDataAdapter
-app = FastAPI(title="NIFTY AI TRADER PRO — Paper Trading", version="3.0.0")
+
+app = FastAPI(
+    title="NIFTY AI TRADER PRO — Market Data Foundation",
+    version="5.9.0",
+)
 ledger = PaperLedger(500000)
 angel = AngelOneMarketDataAdapter()
+
+# Coverage targets only. These are NOT exchange instrument tokens or live contracts.
+INDEX_UNIVERSE = [
+    {"symbol": "NIFTY", "name": "NIFTY 50", "segment": "INDEX"},
+    {"symbol": "BANKNIFTY", "name": "NIFTY BANK", "segment": "INDEX"},
+    {"symbol": "FINNIFTY", "name": "NIFTY FINANCIAL SERVICES", "segment": "INDEX"},
+    {"symbol": "MIDCPNIFTY", "name": "NIFTY MIDCAP SELECT", "segment": "INDEX"},
+    {"symbol": "SENSEX", "name": "S&P BSE SENSEX", "segment": "INDEX"},
+    {"symbol": "BANKEX", "name": "BSE BANKEX", "segment": "INDEX"},
+]
+
+DERIVATIVE_COVERAGE = {
+    "types": ["FUTURES", "OPTIONS"],
+    "option_sides": ["CE", "PE"],
+    "expiry_and_strike_mapping": "PENDING_AUTHORIZED_INSTRUMENT_MASTER",
+    "exchange_tokens": "NOT_INCLUDED_OR_GUESSED",
+}
 
 class CloseSeries(BaseModel):
     close_prices: list[float] = Field(min_length=1, max_length=10000)
@@ -20,20 +45,141 @@ class PaperOrder(BaseModel):
     quantity: int = Field(gt=0, le=100000)
     reference_price: float = Field(gt=0)
 
+class MarketEvent(BaseModel):
+    symbol: str = Field(min_length=1, max_length=40)
+    last_price: float = Field(gt=0)
+    exchange_timestamp: datetime
+    delayed: bool = False
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "mode": "LIVE_DATA_ARCHITECTURE_PAPER_ONLY",
-            "real_orders_enabled": False, "virtual_capital": 500000}
+    return {
+        "status": "ok",
+        "service": "nifty-ai-trader-pro-backend",
+        "version": "5.9.0",
+        "mode": "EDUCATIONAL_PAPER_ONLY",
+        "real_orders_enabled": False,
+        "virtual_capital": 500000,
+    }
+
+@app.get("/api/v5/integration-status")
+async def integration_status():
+    try:
+        angel_status = await angel.status()
+    except Exception:
+        angel_status = {
+            "provider": "Angel One SmartAPI",
+            "connected": False,
+            "configured": False,
+            "mode": "OFFLINE_NOT_CONFIGURED",
+            "read_only": True,
+            "message": "Provider adapter status unavailable; no live feed is connected.",
+        }
+    return {
+        "app_version": "5.9.0",
+        "integration_foundation": "MARKET_DATA_FOUNDATION_READY",
+        "angel_one": angel_status,
+        "authorized_provider": {
+            "connected": False,
+            "mode": "NOT_CONFIGURED",
+            "message": "No authorized market-data feed is connected.",
+        },
+        "stream": {
+            "endpoint": "/ws/market",
+            "status": "OFFLINE_NOT_CONFIGURED",
+            "connected_clients": 0,
+        },
+        "supported_indices": [item["symbol"] for item in INDEX_UNIVERSE],
+        "derivatives": DERIVATIVE_COVERAGE,
+        "live_data_verified": False,
+        "real_orders_enabled": False,
+        "mode": "EDUCATIONAL_PAPER_ONLY",
+    }
 
 @app.get("/api/providers/angel-one")
 async def provider_status():
-    return await angel.status()
+    try:
+        return await angel.status()
+    except Exception:
+        return {
+            "provider": "Angel One SmartAPI",
+            "connected": False,
+            "configured": False,
+            "mode": "OFFLINE_NOT_CONFIGURED",
+            "read_only": True,
+            "real_orders_enabled": False,
+            "message": "No authenticated or authorized market-data feed is connected.",
+        }
+
+@app.get("/api/market/universe")
+async def market_universe():
+    return {
+        "status": "CATALOG_TARGETS_ONLY",
+        "live_data": False,
+        "indices": INDEX_UNIVERSE,
+        "derivatives": DERIVATIVE_COVERAGE,
+        "note": "This is a coverage list, not a live quote list. Contract tokens, strikes and expiries must come from a current authorized instrument master.",
+    }
+
+@app.get("/api/market/feed-status")
+async def market_feed_status():
+    return {
+        "status": "OFFLINE",
+        "source": "NONE",
+        "connected": False,
+        "last_event_at": None,
+        "freshness": "NO_DATA",
+        "read_only": True,
+        "live_data_verified": False,
+        "message": "No live market-data provider is connected.",
+    }
 
 @app.get("/api/market")
 async def market():
-    return {"symbol": "NIFTY", "value": None, "source": "NO_LIVE_FEED",
-            "note": "Live feed is not configured; no synthetic value is labelled as live."}
+    return {
+        "symbol": "NIFTY",
+        "value": None,
+        "source": "NO_LIVE_FEED",
+        "status": "OFFLINE",
+        "read_only": True,
+        "timestamp": None,
+        "note": "Live feed is not configured; no synthetic value is labelled as live.",
+    }
 
+@app.post("/api/market/validate-event")
+async def validate_market_event(event: MarketEvent):
+    now = datetime.now(timezone.utc)
+    ts = event.exchange_timestamp
+    if ts.tzinfo is None:
+        raise HTTPException(status_code=400, detail="exchange_timestamp must include timezone")
+    age = max(0.0, (now - ts.astimezone(timezone.utc)).total_seconds())
+    return {
+        "valid": True,
+        "symbol": event.symbol.strip().upper(),
+        "last_price": event.last_price,
+        "exchange_timestamp": ts.isoformat(),
+        "age_seconds": round(age, 2),
+        "freshness": "FRESH" if age <= 15 and not event.delayed else ("DELAYED" if event.delayed else "STALE"),
+        "source": "VALIDATION_ONLY",
+        "read_only": True,
+        "note": "Validation test only. This event is not stored or represented as a connected live feed.",
+    }
+
+@app.websocket("/ws/market")
+async def market_stream(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        await websocket.send_json({
+            "type": "status",
+            "status": "OFFLINE_NOT_CONFIGURED",
+            "read_only": True,
+            "message": "WebSocket endpoint is reachable, but no provider is connected.",
+        })
+        while True:
+            # Client pings keep the test socket open. No market ticks are fabricated.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
 
 @app.post("/api/analysis/indicators")
 async def indicators(data: CloseSeries):
@@ -69,11 +215,10 @@ async def dashboard():
     .muted{color:#9aabc7}.warn{color:#f5c76b}
     </style></head><body><h1>NIFTY AI TRADER PRO</h1>
     <p class='warn'>₹5,00,000 VIRTUAL CAPITAL • PAPER MODE ONLY</p>
-    <div class='card'><h3>Angel One Provider</h3><p id='provider' class='muted'>Loading…</p></div>
-    <div class='card'><h3>Market feed</h3><p id='market' class='muted'>Loading…</p></div>
-    <div class='card'><h3>Virtual portfolio</h3><p id='ledger' class='muted'>Loading…</p></div>
-    <script>async function load(){let p=await(await fetch('/api/providers/angel-one')).json();
-    document.getElementById('provider').textContent=p.message;
-    let m=await(await fetch('/api/market')).json();document.getElementById('market').textContent=m.note;
-    let l=await(await fetch('/api/paper/ledger')).json();document.getElementById('ledger').textContent='Virtual balance ₹'+l.virtual_balance+' | Records '+l.orders.length;}
+    <div class='card'><h3>Market Feed</h3><p id='feed' class='muted'>Checking…</p></div>
+    <div class='card'><h3>Coverage</h3><p id='coverage' class='muted'>Loading…</p></div>
+    <script>async function load(){let f=await(await fetch('/api/market/feed-status')).json();
+    document.getElementById('feed').textContent=f.status+' — '+f.message;
+    let c=await(await fetch('/api/market/universe')).json();
+    document.getElementById('coverage').textContent=c.indices.map(x=>x.name).join(', ');}
     load();</script></body></html>"""
