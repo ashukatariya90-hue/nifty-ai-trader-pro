@@ -3,6 +3,7 @@ from math import isfinite
 from typing import Optional
 import csv
 import io
+import json
 import asyncio
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Body
@@ -13,285 +14,260 @@ from paper import PaperLedger
 from analysis import analyze_closes, ema_crossover_backtest
 from angel_one import AngelOneMarketDataAdapter
 
-app = FastAPI(
-    title="NIFTY AI TRADER PRO — Read-only Educational Market Data",
-    version="5.11.0",
-)
+app = FastAPI(title="NIFTY AI TRADER PRO — V5.12 Read-only Catalogue", version="5.12.0")
 ledger = PaperLedger(500000)
 angel = AngelOneMarketDataAdapter()
 
 INDEX_UNIVERSE = [
-    {"symbol": "NIFTY", "name": "NIFTY 50", "segment": "INDEX", "exchange": "NSE"},
-    {"symbol": "BANKNIFTY", "name": "NIFTY BANK", "segment": "INDEX", "exchange": "NSE"},
-    {"symbol": "FINNIFTY", "name": "NIFTY FINANCIAL SERVICES", "segment": "INDEX", "exchange": "NSE"},
-    {"symbol": "MIDCPNIFTY", "name": "NIFTY MIDCAP SELECT", "segment": "INDEX", "exchange": "NSE"},
-    {"symbol": "SENSEX", "name": "S&P BSE SENSEX", "segment": "INDEX", "exchange": "BSE"},
-    {"symbol": "BANKEX", "name": "BSE BANKEX", "segment": "INDEX", "exchange": "BSE"},
+    {"symbol":"NIFTY","name":"NIFTY 50","exchange":"NSE"},
+    {"symbol":"BANKNIFTY","name":"NIFTY BANK","exchange":"NSE"},
+    {"symbol":"FINNIFTY","name":"NIFTY FINANCIAL SERVICES","exchange":"NSE"},
+    {"symbol":"MIDCPNIFTY","name":"NIFTY MIDCAP SELECT","exchange":"NSE"},
+    {"symbol":"SENSEX","name":"S&P BSE SENSEX","exchange":"BSE"},
+    {"symbol":"BANKEX","name":"BSE BANKEX","exchange":"BSE"},
 ]
-DERIVATIVE_COVERAGE = {
-    "types": ["FUTURES", "OPTIONS"], "option_sides": ["CE", "PE"],
-    "expiry_and_strike_mapping": "REQUIRES_CURRENT_AUTHORIZED_INSTRUMENT_MASTER",
-    "exchange_tokens": "NEVER_GUESSED",
-}
-MAX_REPLAY_ROWS = 5000
-MAX_INSTRUMENT_ROWS = 50000
-FRESH_SECONDS = 15
-DELAYED_SECONDS = 900
+REQUIRED = {"symbol","exchange","segment","instrument_token","expiry","strike","option_type"}
+MAX_ROWS = 50000
+catalogue: list[dict] = []
+catalogue_loaded_at: Optional[str] = None
 clients: set[WebSocket] = set()
 latest_event: Optional[dict] = None
-instrument_catalogue: list[dict] = []
-catalogue_loaded_at: Optional[str] = None
-feed_mode = "OFFLINE"
-feed_source = "NONE"
-feed_note = "No external provider is connected. Historical replay is supported for education only."
 
 class CloseSeries(BaseModel):
     close_prices: list[float] = Field(min_length=1, max_length=10000)
-
 class BacktestRequest(BaseModel):
     close_prices: list[float] = Field(min_length=30, max_length=10000)
     fee_bps: float = Field(default=5.0, ge=0, le=100)
-
 class PaperOrder(BaseModel):
     side: str
     quantity: int = Field(gt=0, le=100000)
     reference_price: float = Field(gt=0)
-
 class MarketEvent(BaseModel):
     symbol: str = Field(min_length=1, max_length=40)
     last_price: float = Field(gt=0)
     exchange_timestamp: datetime
     delayed: bool = False
 
-def freshness_for(ts: datetime, delayed: bool = False) -> tuple[str, float]:
-    if ts.tzinfo is None:
-        raise ValueError("timestamp must include timezone")
-    age = max(0.0, (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds())
-    if delayed:
-        return "DELAYED", round(age, 2)
-    return ("FRESH" if age <= FRESH_SECONDS else "STALE"), round(age, 2)
+def normalize_record(raw: dict, source: str) -> dict:
+    # Angel One-style JSON aliases -> internal catalogue schema.
+    aliases = {
+        "symbol": ("symbol", "tradingsymbol", "trading_symbol"),
+        "exchange": ("exchange", "exch_seg", "exchange_segment"),
+        "segment": ("segment", "instrumenttype", "instrument_type"),
+        "instrument_token": ("instrument_token", "token"),
+        "expiry": ("expiry",),
+        "strike": ("strike",),
+        "option_type": ("option_type", "optionType"),
+    }
+    result = {}
+    for target, names in aliases.items():
+        value = next((raw.get(n) for n in names if raw.get(n) is not None), "")
+        result[target] = str(value).strip()
+    result["symbol"] = result["symbol"].upper()
+    result["exchange"] = result["exchange"].upper()
+    result["segment"] = result["segment"].upper()
+    result["option_type"] = result["option_type"].upper()
+    # Angel One instrumenttype may encode OPTIDX/FUTIDX; CE/PE may be suffixes
+    # on trading symbols. We intentionally do not infer a missing option side.
+    if not result["option_type"] and result["symbol"].endswith("CE"):
+        result["option_type"] = "CE"
+    elif not result["option_type"] and result["symbol"].endswith("PE"):
+        result["option_type"] = "PE"
+    if result["option_type"] not in {"", "CE", "PE"}:
+        raise ValueError("option_type must be CE or PE")
+    token = result["instrument_token"]
+    if not result["symbol"] or not token.isdigit() or int(token) <= 0:
+        raise ValueError("symbol and positive numeric instrument token are required")
+    if result["exchange"] not in {"NSE", "BSE", "NFO", "BFO"}:
+        raise ValueError("unsupported exchange segment value")
+    if not result["segment"]:
+        raise ValueError("segment/instrumenttype is required")
+    try:
+        strike = float(result["strike"] or 0)
+        if not isfinite(strike) or strike < 0:
+            raise ValueError()
+    except Exception:
+        raise ValueError("invalid strike")
+    result["strike"] = str(strike)
+    if result["option_type"] and (not result["expiry"] or strike <= 0):
+        raise ValueError("option records require expiry and positive strike")
+    return result
 
-async def broadcast(payload: dict):
-    stale_clients = []
-    for ws in list(clients):
-        try:
-            await ws.send_json(payload)
-        except Exception:
-            stale_clients.append(ws)
-    for ws in stale_clients:
-        clients.discard(ws)
+def summarize(rows):
+    by_exchange, by_segment, by_symbol = {}, {}, {}
+    sides = {"CE":0,"PE":0}
+    for row in rows:
+        for target, key in ((by_exchange,"exchange"),(by_segment,"segment"),(by_symbol,"symbol")):
+            target[row[key]] = target.get(row[key],0)+1
+        if row["option_type"] in sides:
+            sides[row["option_type"]] += 1
+    return {"total":len(rows),"by_exchange":by_exchange,"by_segment":by_segment,
+            "by_symbol":by_symbol,"option_sides":sides}
+
+def validate_rows(rows):
+    if not rows:
+        raise HTTPException(400, "Instrument Master contains no records")
+    if len(rows) > MAX_ROWS:
+        raise HTTPException(413, "Too many instrument records")
+    seen_tokens, seen_contracts = set(), set()
+    for i, row in enumerate(rows, start=1):
+        token_key = (row["exchange"], row["instrument_token"])
+        contract_key = tuple(row[k] for k in ("exchange","segment","symbol","expiry","strike","option_type"))
+        if token_key in seen_tokens:
+            raise HTTPException(400, f"Duplicate exchange/token at record {i}")
+        if contract_key in seen_contracts:
+            raise HTTPException(400, f"Duplicate contract at record {i}")
+        seen_tokens.add(token_key); seen_contracts.add(contract_key)
+    return rows
 
 @app.get("/api/health")
 async def health():
-    return {"status":"ok","service":"nifty-ai-trader-pro-backend","version":"5.11.0",
-            "mode":"EDUCATIONAL_PAPER_ONLY","real_orders_enabled":False,"virtual_capital":500000}
+    return {"status":"ok","version":"5.12.0","mode":"EDUCATIONAL_PAPER_ONLY",
+            "real_orders_enabled":False,"virtual_capital":500000}
 
 @app.get("/api/v5/integration-status")
 async def integration_status():
-    try:
-        angel_status = await angel.status()
-    except Exception:
-        angel_status = {"provider":"Angel One SmartAPI","connected":False,"configured":False,
-                        "mode":"OFFLINE_NOT_CONFIGURED","read_only":True}
-    return {
-        "app_version":"5.11.0","integration_foundation":"READ_ONLY_EDUCATIONAL_FEED_READY",
-        "catalogue_validation":"V5_11",
-        "angel_one":angel_status,
-        "authorized_provider":{"connected":False,"mode":"NOT_CONFIGURED",
-          "message":"No external authorized provider is connected by this educational build."},
-        "stream":{"endpoint":"/ws/market","status":"AVAILABLE_FOR_HISTORICAL_REPLAY",
-                  "connected_clients":len(clients)},
-        "supported_indices":[x["symbol"] for x in INDEX_UNIVERSE],
-        "derivatives":DERIVATIVE_COVERAGE,"live_data_verified":False,
-        "real_orders_enabled":False,"mode":"EDUCATIONAL_PAPER_ONLY"
-    }
+    return {"app_version":"5.12.0","integration_foundation":"READ_ONLY_CATALOGUE_READY",
+            "angel_one":await angel.status(),"catalogue_loaded":bool(catalogue),
+            "catalogue_count":len(catalogue),"stream":{"endpoint":"/ws/market",
+            "status":"HISTORICAL_REPLAY_ONLY","connected_clients":len(clients)},
+            "supported_indices":[x["symbol"] for x in INDEX_UNIVERSE],
+            "live_data_verified":False,"real_orders_enabled":False,
+            "mode":"EDUCATIONAL_PAPER_ONLY"}
 
 @app.get("/api/providers/angel-one")
 async def provider_status():
-    try:
-        return await angel.status()
-    except Exception:
-        return {"provider":"Angel One SmartAPI","connected":False,"configured":False,
-                "mode":"OFFLINE_NOT_CONFIGURED","read_only":True,"real_orders_enabled":False}
+    return await angel.status()
 
 @app.get("/api/market/universe")
 async def market_universe():
-    return {"status":"COVERAGE_TARGETS_ONLY","live_data":False,"indices":INDEX_UNIVERSE,
-            "derivatives":DERIVATIVE_COVERAGE,
-            "instrument_master":{"loaded":bool(instrument_catalogue),"count":len(instrument_catalogue),
+    return {"status":"CATALOGUE_TARGETS_ONLY","live_data":False,"indices":INDEX_UNIVERSE,
+            "instrument_master":{"loaded":bool(catalogue),"count":len(catalogue),
                                  "loaded_at":catalogue_loaded_at},
-            "note":"Index names are coverage targets, not exchange tokens. Derivative contracts require a current authorized instrument-master CSV."}
+            "note":"Index targets are not proof of listed/available contracts."}
 
 @app.post("/api/market/instrument-master")
-async def load_instrument_master(csv_text: str = Body(..., media_type="text/plain")):
-    """Load a user-supplied authorized instrument-master CSV. No tokens or contracts are invented."""
-    global instrument_catalogue, catalogue_loaded_at
-    if len(csv_text) > 20_000_000:
-        raise HTTPException(413, "CSV exceeds 20 MB limit")
-    reader = csv.DictReader(io.StringIO(csv_text))
-    required = {"symbol","exchange","segment","instrument_token","expiry","strike","option_type"}
-    headers = set(reader.fieldnames or [])
-    missing = sorted(required - headers)
-    if missing:
-        raise HTTPException(400, {"error":"missing_required_columns","missing":missing})
-    rows=[]
-    seen_tokens=set()
-    seen_contracts=set()
-    for line_no, row in enumerate(reader, start=2):
-        if len(rows) >= MAX_INSTRUMENT_ROWS:
-            raise HTTPException(413, "Too many instrument rows")
-        symbol=(row.get("symbol") or "").strip().upper()
-        token=(row.get("instrument_token") or "").strip()
-        exchange=(row.get("exchange") or "").strip().upper()
-        segment=(row.get("segment") or "").strip().upper()
-        opt=(row.get("option_type") or "").strip().upper()
-        expiry=(row.get("expiry") or "").strip()
-        strike_text=(row.get("strike") or "").strip()
-        if not symbol or not token.isdigit() or int(token) <= 0 or exchange not in {"NSE","BSE"} or not segment:
-            raise HTTPException(400, f"Invalid symbol, numeric token, exchange or segment at CSV line {line_no}")
-        if opt and opt not in {"CE","PE"}:
-            raise HTTPException(400, f"Invalid option_type at CSV line {line_no}")
+async def load_instrument_master(body: str = Body(..., media_type="text/plain")):
+    """Accept either normalized CSV text or Angel One-style JSON text, supplied by the user."""
+    global catalogue, catalogue_loaded_at
+    if len(body) > 20_000_000:
+        raise HTTPException(413, "Payload exceeds 20 MB")
+    rows = []
+    stripped = body.lstrip()
+    if stripped.startswith("[") or stripped.startswith("{"):
         try:
-            strike=float(strike_text) if strike_text else 0.0
-            if not isfinite(strike) or strike < 0: raise ValueError()
-        except Exception:
-            raise HTTPException(400, f"Invalid strike at CSV line {line_no}")
-        if opt and (not expiry or strike <= 0):
-            raise HTTPException(400, f"Option rows require expiry and positive strike at CSV line {line_no}")
-        token_key=(exchange,token)
-        contract_key=(exchange,segment,symbol,expiry,strike,opt)
-        if token_key in seen_tokens:
-            raise HTTPException(400, f"Duplicate exchange/token at CSV line {line_no}")
-        if contract_key in seen_contracts:
-            raise HTTPException(400, f"Duplicate contract row at CSV line {line_no}")
-        seen_tokens.add(token_key); seen_contracts.add(contract_key)
-        clean={k:(v or "").strip() for k,v in row.items() if k in required}
-        clean.update({"symbol":symbol,"exchange":exchange,"segment":segment,
-                      "instrument_token":token,"expiry":expiry,"strike":str(strike),"option_type":opt})
-        rows.append(clean)
-    if not rows:
-        raise HTTPException(400, "Instrument master contains no rows")
-    instrument_catalogue=rows
-    catalogue_loaded_at=datetime.now(timezone.utc).isoformat()
+            payload = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(400, f"Invalid JSON: {exc.msg}")
+        if isinstance(payload, dict):
+            # Support a JSON wrapper with a list under data or instruments.
+            payload = payload.get("data", payload.get("instruments"))
+        if not isinstance(payload, list):
+            raise HTTPException(400, "JSON must be an array of instrument objects or contain data/instruments array")
+        if len(payload) > MAX_ROWS:
+            raise HTTPException(413, "Too many instrument records")
+        for idx, raw in enumerate(payload, start=1):
+            if not isinstance(raw, dict):
+                raise HTTPException(400, f"JSON record {idx} is not an object")
+            try:
+                rows.append(normalize_record(raw, "json"))
+            except ValueError as exc:
+                raise HTTPException(400, f"JSON record {idx}: {exc}")
+    else:
+        reader = csv.DictReader(io.StringIO(body))
+        missing = sorted(REQUIRED - set(reader.fieldnames or []))
+        if missing:
+            raise HTTPException(400, {"error":"missing_required_columns","missing":missing})
+        for idx, raw in enumerate(reader, start=2):
+            try:
+                rows.append(normalize_record(raw, "csv"))
+            except ValueError as exc:
+                raise HTTPException(400, f"CSV line {idx}: {exc}")
+    validate_rows(rows)
+    catalogue = rows
+    catalogue_loaded_at = datetime.now(timezone.utc).isoformat()
     return {"status":"LOADED","count":len(rows),"loaded_at":catalogue_loaded_at,
-            "summary":_catalogue_summary(rows),
-            "source":"USER_SUPPLIED_AUTHORIZED_CSV","live_data":False,
-            "note":"Catalogue metadata only; this does not connect a market feed or verify exchange tokens."}
-
-def _catalogue_summary(rows: list[dict]) -> dict:
-    by_exchange={}
-    by_segment={}
-    by_symbol={}
-    option_sides={"CE":0,"PE":0}
-    for row in rows:
-        by_exchange[row["exchange"]]=by_exchange.get(row["exchange"],0)+1
-        by_segment[row["segment"]]=by_segment.get(row["segment"],0)+1
-        by_symbol[row["symbol"]]=by_symbol.get(row["symbol"],0)+1
-        if row["option_type"] in option_sides:
-            option_sides[row["option_type"]]+=1
-    return {"total":len(rows),"by_exchange":by_exchange,"by_segment":by_segment,
-            "by_symbol":by_symbol,"option_sides":option_sides}
+            "summary":summarize(rows),"source":"USER_SUPPLIED_JSON_OR_CSV",
+            "live_data":False,"exchange_token_verification":"FORMAT_AND_DUPLICATE_CHECK_ONLY",
+            "note":"Catalogue metadata only; no broker connection or live quote verification."}
 
 @app.get("/api/market/instrument-master/summary")
 async def instrument_master_summary():
-    return {"loaded":bool(instrument_catalogue),"count":len(instrument_catalogue),
-            "loaded_at":catalogue_loaded_at,
-            "summary":_catalogue_summary(instrument_catalogue) if instrument_catalogue else {},
-            "source":"USER_SUPPLIED_AUTHORIZED_CSV" if instrument_catalogue else "NONE",
-            "live_data":False,"exchange_token_verification":"NOT_PERFORMED"}
+    return {"loaded":bool(catalogue),"count":len(catalogue),"loaded_at":catalogue_loaded_at,
+            "summary":summarize(catalogue) if catalogue else {},
+            "source":"USER_SUPPLIED_JSON_OR_CSV" if catalogue else "NONE",
+            "live_data":False,"exchange_token_verification":"FORMAT_AND_DUPLICATE_CHECK_ONLY"}
 
 @app.get("/api/market/instruments")
 async def list_instruments(symbol: Optional[str]=None, segment: Optional[str]=None):
-    rows=instrument_catalogue
+    rows=catalogue
     if symbol: rows=[r for r in rows if r["symbol"].upper()==symbol.upper()]
     if segment: rows=[r for r in rows if r["segment"].upper()==segment.upper()]
-    return {"count":len(rows),"source":"USER_SUPPLIED_AUTHORIZED_CSV" if instrument_catalogue else "NONE",
-            "live_data":False,"exchange_token_verification":"NOT_PERFORMED",
-            "instruments":rows[:2000]}
+    return {"count":len(rows),"live_data":False,"instruments":rows[:2000]}
 
 @app.get("/api/market/feed-status")
-async def market_feed_status():
-    global latest_event
+async def feed_status():
     if latest_event:
-        ts=datetime.fromisoformat(latest_event["exchange_timestamp"])
-        fresh, age=freshness_for(ts, latest_event.get("delayed",False))
         return {"status":"HISTORICAL_REPLAY","source":"USER_SUPPLIED_CSV_REPLAY",
                 "connected":False,"last_event_at":latest_event["exchange_timestamp"],
-                "freshness":fresh,"age_seconds":age,"read_only":True,"live_data_verified":False,
-                "websocket_clients":len(clients),
-                "message":"Educational historical replay only; not a live market feed."}
+                "freshness":"DELAYED","read_only":True,"live_data_verified":False,
+                "websocket_clients":len(clients)}
     return {"status":"OFFLINE","source":"NONE","connected":False,"last_event_at":None,
             "freshness":"NO_DATA","read_only":True,"live_data_verified":False,
-            "websocket_clients":len(clients),
-            "message":"No live provider connected. Upload historical CSV replay to test the Android stream."}
-
-@app.get("/api/market")
-async def market():
-    if latest_event:
-        return {**latest_event,"status":"HISTORICAL_REPLAY","read_only":True,
-                "live_data_verified":False,"note":"Historical replay, not live market data."}
-    return {"symbol":"NIFTY","value":None,"source":"NO_LIVE_FEED","status":"OFFLINE",
-            "read_only":True,"timestamp":None,"note":"No live feed is configured."}
-
-@app.post("/api/market/validate-event")
-async def validate_market_event(event: MarketEvent):
-    try: fresh, age=freshness_for(event.exchange_timestamp,event.delayed)
-    except ValueError as exc: raise HTTPException(400,str(exc))
-    return {"valid":True,"symbol":event.symbol.strip().upper(),"last_price":event.last_price,
-            "exchange_timestamp":event.exchange_timestamp.isoformat(),"age_seconds":age,
-            "freshness":fresh,"source":"VALIDATION_ONLY","read_only":True,
-            "note":"Validation only; not stored as a live quote."}
+            "websocket_clients":len(clients)}
 
 @app.post("/api/market/replay-csv")
-async def replay_csv(csv_text: str = Body(..., media_type="text/plain")):
-    """Replay user-supplied historical CSV rows over the WebSocket, explicitly labelled historical."""
+async def replay_csv(body: str = Body(..., media_type="text/plain")):
     global latest_event
-    if len(csv_text)>5_000_000: raise HTTPException(413,"CSV exceeds 5 MB limit")
-    reader=csv.DictReader(io.StringIO(csv_text))
+    reader=csv.DictReader(io.StringIO(body))
     required={"symbol","timestamp","last_price"}
     missing=sorted(required-set(reader.fieldnames or []))
     if missing: raise HTTPException(400,{"error":"missing_required_columns","missing":missing})
-    parsed=[]
-    for line_no,row in enumerate(reader,start=2):
-        if len(parsed)>=MAX_REPLAY_ROWS: raise HTTPException(413,"Maximum 5000 replay rows")
+    count=0
+    for idx,row in enumerate(reader,start=2):
         try:
-            ts=datetime.fromisoformat((row.get("timestamp") or "").strip().replace("Z","+00:00"))
-            if ts.tzinfo is None: raise ValueError("timestamp timezone missing")
-            price=float(row.get("last_price",""))
-            symbol=(row.get("symbol") or "").strip().upper()
-            if not symbol or not isfinite(price) or price<=0: raise ValueError("invalid symbol or price")
+            ts=datetime.fromisoformat(row["timestamp"].strip().replace("Z","+00:00"))
+            price=float(row["last_price"])
+            if ts.tzinfo is None or not isfinite(price) or price<=0: raise ValueError("invalid timestamp/price")
+            latest_event={"type":"market_event","symbol":row["symbol"].strip().upper(),
+                "last_price":price,"exchange_timestamp":ts.isoformat(),"source":"USER_SUPPLIED_CSV_REPLAY",
+                "mode":"HISTORICAL_REPLAY","delayed":True,"read_only":True,"live_data_verified":False}
+            for ws in list(clients):
+                try: await ws.send_json(latest_event)
+                except Exception: clients.discard(ws)
+            count+=1
         except Exception as exc:
-            raise HTTPException(400,f"Invalid CSV row {line_no}: {exc}")
-        parsed.append({"type":"market_event","symbol":symbol,"last_price":price,
-                       "exchange_timestamp":ts.isoformat(),"delayed":True,
-                       "source":"USER_SUPPLIED_CSV_REPLAY","mode":"HISTORICAL_REPLAY",
-                       "read_only":True,"live_data_verified":False})
-    if not parsed: raise HTTPException(400,"CSV contains no data rows")
-    for event in parsed:
-        latest_event=event
-        await broadcast(event)
-        await asyncio.sleep(0)
-    return {"status":"REPLAY_COMPLETE","rows_replayed":len(parsed),
-            "source":"USER_SUPPLIED_CSV_REPLAY","live_data_verified":False,
-            "websocket_clients":len(clients),
-            "note":"Historical rows were replayed to connected WebSocket clients. This is not live data."}
+            raise HTTPException(400,f"CSV line {idx}: {exc}")
+    if count==0: raise HTTPException(400,"No replay rows")
+    return {"status":"REPLAY_COMPLETE","rows_replayed":count,"live_data_verified":False,
+            "source":"USER_SUPPLIED_CSV_REPLAY"}
 
 @app.websocket("/ws/market")
-async def market_stream(websocket: WebSocket):
-    await websocket.accept()
-    clients.add(websocket)
+async def market_ws(ws: WebSocket):
+    await ws.accept(); clients.add(ws)
     try:
-        await websocket.send_json({"type":"status","status":"CONNECTED",
-            "mode":"HISTORICAL_REPLAY_ONLY","read_only":True,"live_data_verified":False,
-            "message":"Socket connected. It receives only explicitly labelled CSV replay events."})
-        if latest_event:
-            await websocket.send_json(latest_event)
-        while True:
-            await websocket.receive_text()
+        await ws.send_json({"type":"status","status":"CONNECTED","mode":"HISTORICAL_REPLAY_ONLY",
+                            "live_data_verified":False,"read_only":True})
+        if latest_event: await ws.send_json(latest_event)
+        while True: await ws.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        clients.discard(websocket)
+        clients.discard(ws)
+
+@app.get("/api/market")
+async def market():
+    return latest_event or {"symbol":"NIFTY","value":None,"source":"NO_LIVE_FEED",
+        "status":"OFFLINE","read_only":True,"live_data_verified":False}
+
+@app.get("/api/market/validate-event")
+async def validate_event(symbol: str, last_price: float, exchange_timestamp: datetime):
+    if exchange_timestamp.tzinfo is None:
+        raise HTTPException(400,"Timestamp must include timezone")
+    age=max(0,(datetime.now(timezone.utc)-exchange_timestamp.astimezone(timezone.utc)).total_seconds())
+    return {"valid":last_price>0,"symbol":symbol.upper(),"last_price":last_price,
+            "age_seconds":round(age,2),"freshness":"FRESH" if age<=15 else "STALE",
+            "source":"VALIDATION_ONLY","live_data_verified":False}
 
 @app.post("/api/analysis/indicators")
 async def indicators(data: CloseSeries):
@@ -304,7 +280,7 @@ async def backtest(data: BacktestRequest):
     except ValueError as exc: raise HTTPException(400,str(exc))
 
 @app.get("/api/paper/ledger")
-async def get_ledger(): return ledger.snapshot()
+async def paper_ledger(): return ledger.snapshot()
 
 @app.post("/api/paper/order")
 async def paper_order(order: PaperOrder):
@@ -313,14 +289,4 @@ async def paper_order(order: PaperOrder):
 
 @app.get("/",response_class=HTMLResponse)
 async def dashboard():
-    return """<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>
-    <title>NIFTY AI TRADER PRO</title><style>body{background:#080d18;color:#e8eefc;font:16px Arial;padding:22px}
-    .card{background:#121c2e;border:1px solid #263650;border-radius:14px;padding:16px;margin:12px 0}
-    .muted{color:#9aabc7}.warn{color:#f5c76b}</style></head><body><h1>NIFTY AI TRADER PRO</h1>
-    <p class='warn'>EDUCATIONAL • PAPER MODE ONLY • NO LIVE FEED</p>
-    <div class='card'><h3>Feed status</h3><p id='feed' class='muted'>Checking…</p></div>
-    <div class='card'><h3>Coverage targets</h3><p id='coverage' class='muted'>Loading…</p></div>
-    <script>async function load(){let f=await(await fetch('/api/market/feed-status')).json();
-    document.getElementById('feed').textContent=f.status+' — '+f.message;
-    let c=await(await fetch('/api/market/universe')).json();
-    document.getElementById('coverage').textContent=c.indices.map(x=>x.name).join(', ');}load();</script></body></html>"""
+    return "<html><body><h2>NIFTY AI TRADER PRO V5.12</h2><p>Educational paper mode. No live feed or real orders.</p></body></html>"
