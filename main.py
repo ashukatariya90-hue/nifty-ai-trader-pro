@@ -15,7 +15,7 @@ from angel_one import AngelOneMarketDataAdapter
 
 app = FastAPI(
     title="NIFTY AI TRADER PRO — Read-only Educational Market Data",
-    version="5.10.0",
+    version="5.11.0",
 )
 ledger = PaperLedger(500000)
 angel = AngelOneMarketDataAdapter()
@@ -83,7 +83,7 @@ async def broadcast(payload: dict):
 
 @app.get("/api/health")
 async def health():
-    return {"status":"ok","service":"nifty-ai-trader-pro-backend","version":"5.10.0",
+    return {"status":"ok","service":"nifty-ai-trader-pro-backend","version":"5.11.0",
             "mode":"EDUCATIONAL_PAPER_ONLY","real_orders_enabled":False,"virtual_capital":500000}
 
 @app.get("/api/v5/integration-status")
@@ -94,7 +94,8 @@ async def integration_status():
         angel_status = {"provider":"Angel One SmartAPI","connected":False,"configured":False,
                         "mode":"OFFLINE_NOT_CONFIGURED","read_only":True}
     return {
-        "app_version":"5.10.0","integration_foundation":"READ_ONLY_EDUCATIONAL_FEED_READY",
+        "app_version":"5.11.0","integration_foundation":"READ_ONLY_EDUCATIONAL_FEED_READY",
+        "catalogue_validation":"V5_11",
         "angel_one":angel_status,
         "authorized_provider":{"connected":False,"mode":"NOT_CONFIGURED",
           "message":"No external authorized provider is connected by this educational build."},
@@ -134,6 +135,8 @@ async def load_instrument_master(csv_text: str = Body(..., media_type="text/plai
     if missing:
         raise HTTPException(400, {"error":"missing_required_columns","missing":missing})
     rows=[]
+    seen_tokens=set()
+    seen_contracts=set()
     for line_no, row in enumerate(reader, start=2):
         if len(rows) >= MAX_INSTRUMENT_ROWS:
             raise HTTPException(413, "Too many instrument rows")
@@ -142,18 +145,60 @@ async def load_instrument_master(csv_text: str = Body(..., media_type="text/plai
         exchange=(row.get("exchange") or "").strip().upper()
         segment=(row.get("segment") or "").strip().upper()
         opt=(row.get("option_type") or "").strip().upper()
-        if not symbol or not token or exchange not in {"NSE","BSE"}:
-            raise HTTPException(400, f"Invalid symbol/token/exchange at CSV line {line_no}")
+        expiry=(row.get("expiry") or "").strip()
+        strike_text=(row.get("strike") or "").strip()
+        if not symbol or not token.isdigit() or int(token) <= 0 or exchange not in {"NSE","BSE"} or not segment:
+            raise HTTPException(400, f"Invalid symbol, numeric token, exchange or segment at CSV line {line_no}")
         if opt and opt not in {"CE","PE"}:
             raise HTTPException(400, f"Invalid option_type at CSV line {line_no}")
-        rows.append({k:(v or "").strip() for k,v in row.items() if k in required})
+        try:
+            strike=float(strike_text) if strike_text else 0.0
+            if not isfinite(strike) or strike < 0: raise ValueError()
+        except Exception:
+            raise HTTPException(400, f"Invalid strike at CSV line {line_no}")
+        if opt and (not expiry or strike <= 0):
+            raise HTTPException(400, f"Option rows require expiry and positive strike at CSV line {line_no}")
+        token_key=(exchange,token)
+        contract_key=(exchange,segment,symbol,expiry,strike,opt)
+        if token_key in seen_tokens:
+            raise HTTPException(400, f"Duplicate exchange/token at CSV line {line_no}")
+        if contract_key in seen_contracts:
+            raise HTTPException(400, f"Duplicate contract row at CSV line {line_no}")
+        seen_tokens.add(token_key); seen_contracts.add(contract_key)
+        clean={k:(v or "").strip() for k,v in row.items() if k in required}
+        clean.update({"symbol":symbol,"exchange":exchange,"segment":segment,
+                      "instrument_token":token,"expiry":expiry,"strike":str(strike),"option_type":opt})
+        rows.append(clean)
     if not rows:
         raise HTTPException(400, "Instrument master contains no rows")
     instrument_catalogue=rows
     catalogue_loaded_at=datetime.now(timezone.utc).isoformat()
     return {"status":"LOADED","count":len(rows),"loaded_at":catalogue_loaded_at,
+            "summary":_catalogue_summary(rows),
             "source":"USER_SUPPLIED_AUTHORIZED_CSV","live_data":False,
-            "note":"Catalogue metadata only; this does not connect a market feed."}
+            "note":"Catalogue metadata only; this does not connect a market feed or verify exchange tokens."}
+
+def _catalogue_summary(rows: list[dict]) -> dict:
+    by_exchange={}
+    by_segment={}
+    by_symbol={}
+    option_sides={"CE":0,"PE":0}
+    for row in rows:
+        by_exchange[row["exchange"]]=by_exchange.get(row["exchange"],0)+1
+        by_segment[row["segment"]]=by_segment.get(row["segment"],0)+1
+        by_symbol[row["symbol"]]=by_symbol.get(row["symbol"],0)+1
+        if row["option_type"] in option_sides:
+            option_sides[row["option_type"]]+=1
+    return {"total":len(rows),"by_exchange":by_exchange,"by_segment":by_segment,
+            "by_symbol":by_symbol,"option_sides":option_sides}
+
+@app.get("/api/market/instrument-master/summary")
+async def instrument_master_summary():
+    return {"loaded":bool(instrument_catalogue),"count":len(instrument_catalogue),
+            "loaded_at":catalogue_loaded_at,
+            "summary":_catalogue_summary(instrument_catalogue) if instrument_catalogue else {},
+            "source":"USER_SUPPLIED_AUTHORIZED_CSV" if instrument_catalogue else "NONE",
+            "live_data":False,"exchange_token_verification":"NOT_PERFORMED"}
 
 @app.get("/api/market/instruments")
 async def list_instruments(symbol: Optional[str]=None, segment: Optional[str]=None):
@@ -161,7 +206,8 @@ async def list_instruments(symbol: Optional[str]=None, segment: Optional[str]=No
     if symbol: rows=[r for r in rows if r["symbol"].upper()==symbol.upper()]
     if segment: rows=[r for r in rows if r["segment"].upper()==segment.upper()]
     return {"count":len(rows),"source":"USER_SUPPLIED_AUTHORIZED_CSV" if instrument_catalogue else "NONE",
-            "live_data":False,"instruments":rows[:2000]}
+            "live_data":False,"exchange_token_verification":"NOT_PERFORMED",
+            "instruments":rows[:2000]}
 
 @app.get("/api/market/feed-status")
 async def market_feed_status():
