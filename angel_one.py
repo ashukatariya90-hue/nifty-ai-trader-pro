@@ -1,17 +1,28 @@
 class AngelOneMarketDataAdapter:
-    """Not-configured placeholder; no SmartAPI authentication or order methods."""
+    """Read-only provider status placeholder.
+
+    This module deliberately does not authenticate to a broker, fetch private
+    account data, open a broker WebSocket, or submit orders.
+    """
     async def status(self):
         return {
-            "provider": "Angel One",
+            "provider": "Angel One SmartAPI",
             "connected": False,
-            "mode": "NOT_CONFIGURED",
-            "message": "Live market data is not connected. Use the provider's current official documentation and authorized access for any future data integration."
+            "configured": False,
+            "mode": "OFFLINE_NOT_CONFIGURED",
+            "read_only": True,
+            "real_orders_enabled": False,
+            "message": (
+                "Instrument catalogue support is available, but no authorized "
+                "market-data connection is configured or verified."
+            ),
         }
 
     async def latest_quote(self, symbol: str):
         return {
-            "symbol": symbol,
+            "symbol": symbol.strip().upper(),
             "available": False,
             "source": "NOT_CONNECTED",
-            "message": "No live quote available from this placeholder."
+            "live_data_verified": False,
+            "message": "No verified live quote is available.",
         }
