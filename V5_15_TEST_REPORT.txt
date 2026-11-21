@@ -1,0 +1,6 @@
+NIFTY AI TRADER PRO V5.15
+Backend test command: python -m pytest -q
+Result: 25 passed
+Android APK build: NOT RUN
+Angel One live feed: NOT CONNECTED / NOT VERIFIED
+Real broker orders: DISABLED

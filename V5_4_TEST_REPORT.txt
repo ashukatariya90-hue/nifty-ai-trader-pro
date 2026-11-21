@@ -1,0 +1,17 @@
+NIFTY AI TRADER PRO V5.4 TEST REPORT
+
+Backend test command:
+PYTHONPATH=. pytest -q
+
+Result: 17 passed
+
+New coverage:
+- Valid historical OHLCV CSV returns EMA50, MACD signal, VWAP and data quality.
+- Invalid OHLC bounds are rejected.
+- Non-increasing/duplicate dates are rejected.
+- Existing paper-only and no-live-feed assertions remain passing.
+
+Not verified:
+- Android APK compilation or runtime.
+- Angel One authentication or live WebSocket feed.
+- External news/sentiment provider.

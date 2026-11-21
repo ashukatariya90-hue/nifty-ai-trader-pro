@@ -5,8 +5,8 @@
 - Paper positions and closed-trade history are saved locally on the device and restored after app restart.
 - Paper order form validates BUY/SELL stop-loss and target direction.
 - Shows estimated virtual stop-loss exposure and illustrative reward/risk from the entered assumptions.
-- Analysis tab calculates EMA 9, EMA 21 and RSI 14 from user-supplied closing prices (oldest to newest).
-- Missing data is shown as insufficient; the app does not fabricate prices or pretend to have AI/live signals.
+- Analysis tab calculates EMA 9, EMA 21 and RSI 14 from user-supplied closing prices (oldest to newest). RSI 14 uses Wilder smoothing (first 14 price changes seed the averages; later changes are recursively smoothed).
+- Missing data is shown as insufficient; RSI requires at least 15 closing prices. The UI labels the RSI method as Wilder. The app does not fabricate prices or pretend to have AI/live signals.
 
 ## FastAPI backend
 - `GET /api/health` — mode and safety status.
@@ -31,3 +31,44 @@
 4. Download artifact `NIFTY-AI-TRADER-PRO-debug` after the run succeeds.
 
 The workflow builds a debug APK for testing; it is not a Play Store release build.
+
+
+## V5 — Advanced Educational Market Context
+- EMA 9/21/50, Wilder RSI-14, MACD (12,26,9), Bollinger Bands (20, ±2 SD) and ATR-14 calculations from supplied candles.
+- Recent-range support/resistance references from supplied OHLC candles; Android analysis lab also shows 20-close range references (not candle-derived levels).
+- Explicit unavailable states for news sentiment, market breadth and options sentiment until authorized sources are configured.
+- No fabricated live status, no BUY/SELL instructions, no broker order routing.
+- Backend endpoint: `POST /api/analysis/market-context` with arrays `high`, `low`, `close`, and optional `volume`.
+- This package is source code; live feed credentials and remote provider verification are not included.
+
+## V5.1 — Integration readiness
+- Provider-neutral read-only data contract and explicit Angel One placeholder retained.
+- Android INTERNET permission added; cleartext HTTP disabled in the manifest.
+- Provider prerequisites and validation checklist: `ANGEL_ONE_INTEGRATION_READINESS_HI.md`.
+- Safe backend environment template: `backend/.env.example` (contains no secrets).
+- This remains OFFLINE_NOT_CONFIGURED. It is not connected to Angel One and has no broker login/order execution.
+
+
+## V5.2 — Analysis input quality update
+- Analysis input accepts comma, whitespace and newline-separated historical close prices.
+- Invalid/non-positive tokens are counted and reported rather than silently disappearing.
+- Clear-input control and explicit 50-observation requirement for EMA 50.
+- EMA now uses an initial simple-average seed before recursive smoothing.
+- VWAP is explicitly marked unavailable in the Android close-only screen; backend can calculate VWAP only when matching OHLCV volume data is supplied.
+- Backend market-context response identifies caller-supplied historical OHLCV basis and does not create live data or trade instructions.
+- App version: 5.3.0 (versionCode 9).
+
+
+## V5.3 — Historical CSV Import
+- Analysis tab se phone file picker ke through historical OHLCV CSV import.
+- Required columns: Date,Open,High,Low,Close,Volume (Close mandatory).
+- CSV Close values se EMA/RSI/MACD/Bollinger/range context calculate hota hai.
+- Complete valid High/Low/Close/Volume rows hon to typical-price VWAP calculate hota hai.
+- CSV local device par read hoti hai; ye live feed nahi hai.
+- Sample file: HISTORICAL_OHLCV_CSV_TEMPLATE.csv.
+
+
+## V5.5 Integration Foundation
+- Read-only provider contract, timestamp/freshness validation and WebSocket fan-out.
+- Angel One and news adapters remain unconfigured placeholders.
+- No credentials, account authentication, live feed or order execution are included.

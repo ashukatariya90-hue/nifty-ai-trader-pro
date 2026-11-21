@@ -1,0 +1,20 @@
+NIFTY AI TRADER PRO V5.3 — CSV IMPORT
+
+Analysis tab mein IMPORT HISTORICAL CSV button se phone ke file picker mein CSV select karein.
+Required header:
+Date,Open,High,Low,Close,Volume
+
+- Rows oldest-to-newest order mein honi chahiye.
+- Close column mandatory hai.
+- High, Low aur Volume available/valid hon to VWAP calculate hoga.
+- CSV device par hi read hoti hai; is feature ke liye network permission ya API key ki zarurat nahi.
+- Ye historical data import hai, live feed nahi.
+- Missing/invalid Close rows skip hongi; VWAP tabhi dikhaya jayega jab OHLCV arrays poori aur aligned hon.
+- No BUY/SELL instruction or real broker order is produced.
+
+Sample template: HISTORICAL_OHLCV_CSV_TEMPLATE.csv
+
+Verification:
+- Backend Python compilation: passed
+- Backend tests: 15 passed
+- Android APK compilation/device test: not run in this environment; run GitHub Actions workflow before installing.

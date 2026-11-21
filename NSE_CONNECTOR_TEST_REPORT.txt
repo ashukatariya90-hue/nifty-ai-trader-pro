@@ -1,0 +1,10 @@
+NSE connector validation report
+================================
+Local Python compile: passed
+Backend pytest: 10 passed
+Mocked route tests: passed
+Read-only tool allowlist test: passed
+Unknown server validation test: passed
+Live NSE remote handshake: NOT VERIFIED (DNS/network unavailable in this environment)
+Android dashboard NSE display integration: NOT YET IMPLEMENTED
+NSE source classification: informational/educational; CM intraday data is described by NSE as 1-3 minute delayed, not tick-by-tick.

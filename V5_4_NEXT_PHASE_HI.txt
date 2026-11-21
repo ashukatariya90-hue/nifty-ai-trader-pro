@@ -1,0 +1,29 @@
+NIFTY AI TRADER PRO V5.4 — HISTORICAL DATA QUALITY & ANALYSIS API
+
+Naya endpoint:
+POST /api/analysis/csv
+Content-Type: text/csv
+Body: raw CSV text
+
+Required columns (case-insensitive): Date,Open,High,Low,Close,Volume
+Validation:
+- Maximum CSV size: 2 MB
+- At least 2 rows
+- ISO date/date-time, strictly increasing, no duplicate dates
+- Finite numeric OHLCV values
+- Positive Open/High/Low/Close; non-negative Volume
+- Low <= Open/Close <= High
+
+Validated data par descriptive historical metrics return hote hain:
+EMA 9/21/50, Wilder RSI, MACD and signal/histogram, Bollinger 20, ATR, recent-range references, VWAP, plus data-quality metadata.
+
+IMPORTANT:
+- This endpoint is historical CSV analysis only.
+- It does not connect to Angel One or any live feed.
+- No BUY/SELL signals, investment advice, or real broker orders are generated.
+- News, breadth and options sentiment remain NOT_CONNECTED; no fake sentiment is shown.
+- Android CSV picker currently processes imported data on-device. The new API endpoint is a backend capability and is not yet wired into the Android screen.
+
+Verification:
+- Backend pytest: 17 passed
+- Android APK build/device test: not run here.

@@ -1,0 +1,20 @@
+NIFTY AI TRADER PRO V5 — LOCAL TEST REPORT
+
+Backend Python compileall: PASS
+Backend pytest: 12 passed
+
+Covered:
+- Existing paper-only health and ledger routes
+- Existing no-fabricated-live-data status
+- NSE informational connector allowlist behavior
+- EMA/RSI and lagged historical toy backtest
+- Advanced educational market-context endpoint
+- Invalid OHLC candle validation
+
+NOT VERIFIED:
+- Remote NSE MCP connectivity (earlier environment DNS lookup failed)
+- Any licensed live provider / Angel One authentication or streaming
+- Android Gradle/APK build in this container (Android SDK/Gradle are not installed here)
+- Device-level Foreground Service / battery / notification testing
+
+No live feed is claimed. News sentiment, market breadth and options sentiment report NOT_CONNECTED until a permitted, verified source is configured. The app remains educational and paper-only.

@@ -1,0 +1,8 @@
+NIFTY AI TRADER PRO V5.2 — TEST REPORT
+
+Scope:
+- Android analysis input validation and display updates.
+- Backend educational OHLCV analysis VWAP support.
+- No live feed, provider authentication, news feed or broker functionality is claimed.
+
+Tests are run locally before packaging. See the accompanying final response for actual results.
