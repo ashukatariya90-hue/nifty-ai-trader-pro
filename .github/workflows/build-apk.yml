@@ -19,7 +19,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="NIFTY_AI_TRADER_PRO_V5_4_HISTORICAL_ANALYSIS.zip"
+          ZIP_FILE="NIFTY_AI_TRADER_PRO_V5_18_RENDER_DEPLOY_PREP.zip"
           if [ ! -f "$ZIP_FILE" ]; then
             echo "::error::Upload $ZIP_FILE to the repository root first."
             exit 1
@@ -71,7 +71,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NIFTY-AI-TRADER-PRO-V5-1-debug
+          name: NIFTY-AI-TRADER-PRO-V5-18-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
