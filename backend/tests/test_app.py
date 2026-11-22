@@ -154,7 +154,7 @@ def test_current_integration_status_is_explicitly_offline():
     r = client.get("/api/v5/integration-status")
     assert r.status_code == 200
     body = r.json()
-    assert body["app_version"] == "6.2.0"
+    assert body["app_version"] == "6.3.0"
     assert body["live_data_verified"] is False
     assert body["real_orders_enabled"] is False
     assert body["angel_one"]["connected"] is False
@@ -286,7 +286,7 @@ def test_v61_historical_csv_research_endpoint_returns_full_pipeline():
     response = client.post("/api/research/historical-csv", content="\n".join(rows), headers={"content-type": "text/csv"})
     assert response.status_code == 200
     body = response.json()
-    assert body["engine"] == "V6_2_HISTORICAL_CSV_RESEARCH"
+    assert body["engine"] == "V6_3_NSE_NATIVE_CSV_RESEARCH"
     assert body["dataset_validation"]["valid"] is True
     assert body["multi_factor"]["classification"] == "DESCRIPTIVE_HISTORICAL_CONTEXT_ONLY"
     assert body["walk_forward"]["is_trade_signal"] is False
@@ -334,3 +334,29 @@ def test_historical_csv_still_accepts_ohlcv_with_real_volume():
     body = response.json()
     assert body["volume_available"] is True
     assert body["market_context"]["vwap"] is not None
+
+
+def test_native_nse_index_historical_csv_accepts_newest_first_ohlc():
+    from app.historical_research import analyze_historical_csv
+    sample = """Index Name,Date,Open,High,Low,Close
+NIFTY 50,20 Nov 2026,25368.00,25808.80,25345.20,25800.60
+NIFTY 50,19 Nov 2026,25186.80,25514.30,25104.80,25514.30
+"""
+    # Expand to 50+ daily rows, retaining NSE's original heading and date style.
+    from datetime import date, timedelta
+    records = []
+    start = date(2026, 8, 1)
+    for i in range(56):
+        close = 24000 + i * 4
+        d = start + timedelta(days=i)
+        records.append(f"NIFTY 50,{d.strftime('%d %b %Y')},{close-5},{close+10},{close-10},{close}")
+    records.reverse()
+    csv_text = "Index Name,Date,Open,High,Low,Close" + chr(10) + chr(10).join(records)
+    result = analyze_historical_csv(csv_text)
+    assert result["engine"] == "V6_3_NSE_NATIVE_CSV_RESEARCH"
+    assert result["rows"] == 56
+    assert result["volume_available"] is False
+    assert result["first_timestamp"].startswith("2026-08-01")
+    assert result["last_timestamp"].startswith("2026-09-25")
+    assert result["market_context"]["vwap"] is None
+    assert result["real_orders_enabled"] is False

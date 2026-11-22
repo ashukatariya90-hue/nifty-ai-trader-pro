@@ -88,3 +88,7 @@ Android dashboard ab backend ke multi-factor analysis, historical dataset valida
 
 ## V6.2 OHLC CSV समर्थन
 अब ऐतिहासिक CSV में Volume वैकल्पिक है। Date,Open,High,Low,Close के कम-से-कम 50 सही रिकॉर्ड स्वीकार होंगे। Volume न होने पर VWAP/volume factor उपलब्ध नहीं दिखेंगे; कोई volume डेटा बनाया नहीं जाएगा। ऐप research-only और paper-only रहेगा।
+
+
+## V6.3 मूल NSE CSV समर्थन
+अब NSE Index Historical Data की मूल CSV (Index Name, Date, Open, High, Low, Close) सीधे स्वीकार होती है। `20 Nov 2026` जैसे दिनांक पहचाने जाते हैं और नवीनतम-से-पुराने क्रम को ऐप अपने-आप पुराने-से-नए क्रम में व्यवस्थित करता है। Volume न होने पर उसे नहीं बनाया जाता। यह historical CSV import है, live market feed नहीं।

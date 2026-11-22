@@ -894,40 +894,65 @@ private fun splitCsvRow(line: String): List<String> {
 
 private fun parseMarketCsv(raw: String): CsvMarketData {
     val lines = raw.lineSequence().map { it.trim().removePrefix("\uFEFF") }.filter { it.isNotBlank() }.toList()
-    if (lines.size < 2) return CsvMarketData(error = "CSV needs a header and at least one data row.")
-    val header = splitCsvRow(lines.first()).map { it.lowercase().replace("_", "").replace(" ", "") }
+    if (lines.size < 2) return CsvMarketData(error = "CSV needs a header and at least 50 data rows.")
+    fun normalize(value: String) = value.trim().trim('"').lowercase()
+        .replace("\uFEFF", "").replace(Regex("[^a-z0-9]"), "")
+    val headerIndex = lines.indexOfFirst { line ->
+        val h = splitCsvRow(line).map(::normalize)
+        h.any { it in setOf("date", "indexdate", "tradedate") } &&
+            h.any { it in setOf("open", "openindexvalue", "openprice") } &&
+            h.any { it in setOf("high", "highindexvalue", "highprice") } &&
+            h.any { it in setOf("low", "lowindexvalue", "lowprice") } &&
+            h.any { it in setOf("close", "closingindexvalue", "closeindexvalue", "closingprice") }
+    }
+    if (headerIndex < 0) return CsvMarketData(error = "NSE CSV header not recognised. Expected Date/Open/High/Low/Close or Open/High/Low/Closing Index Value headings.")
+    val header = splitCsvRow(lines[headerIndex]).map(::normalize)
     fun col(vararg names: String) = header.indexOfFirst { it in names }
-    val dateIdx = col("date")
-    val openIdx = col("open")
-    val highIdx = col("high")
-    val lowIdx = col("low")
-    val closeIdx = col("close")
-    val volumeIdx = col("volume")
-    if (listOf(dateIdx, openIdx, highIdx, lowIdx, closeIdx).any { it < 0 }) {
-        return CsvMarketData(error = "Required columns: Date,Open,High,Low,Close; Volume is optional.")
+    val dateIdx = col("date", "indexdate", "tradedate")
+    val openIdx = col("open", "openindexvalue", "openprice")
+    val highIdx = col("high", "highindexvalue", "highprice")
+    val lowIdx = col("low", "lowindexvalue", "lowprice")
+    val closeIdx = col("close", "closingindexvalue", "closeindexvalue", "closingprice")
+    val volumeIdx = col("volume", "tradedquantity", "totaltradedquantity", "totalvolume")
+    val dateFormats = listOf("yyyy-MM-dd", "dd MMM yyyy", "dd-MMM-yyyy", "dd-MM-yyyy", "dd/MM/yyyy", "MM/dd/yyyy")
+    fun dateKey(value: String): Long? {
+        for (pattern in dateFormats) {
+            try {
+                val fmt = java.text.SimpleDateFormat(pattern, java.util.Locale.ENGLISH).apply { isLenient = false }
+                return fmt.parse(value.trim())?.time
+            } catch (_: Exception) { }
+        }
+        return null
     }
-    val closes = mutableListOf<Double>()
-    val highs = mutableListOf<Double>()
-    val lows = mutableListOf<Double>()
-    val volumes = mutableListOf<Double>()
-    for ((rowIndex, line) in lines.drop(1).withIndex()) {
+    data class Candle(val date: Long, val open: Double, val high: Double, val low: Double, val close: Double, val volume: Double?)
+    val candles = mutableListOf<Candle>()
+    for ((rowIndex, line) in lines.drop(headerIndex + 1).withIndex()) {
         val cells = splitCsvRow(line)
-        val date = cells.getOrNull(dateIdx)?.trim().orEmpty()
-        if (date.isBlank()) return CsvMarketData(error = "Row ${rowIndex + 2}: Date is required.")
-        fun number(index: Int): Double? = cells.getOrNull(index)?.replace(",", "")?.toDoubleOrNull()?.takeIf { it.isFinite() }
-        val open = number(openIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Open value.")
-        val high = number(highIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid High value.")
-        val low = number(lowIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Low value.")
-        val close = number(closeIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Close value.")
+        if (cells.all { it.isBlank() }) continue
+        val dateText = cells.getOrNull(dateIdx)?.trim().orEmpty()
+        val date = dateKey(dateText) ?: return CsvMarketData(error = "Row ${headerIndex + rowIndex + 2}: unsupported or invalid date '$dateText'.")
+        fun number(index: Int): Double? = cells.getOrNull(index)?.replace(",", "")?.trim()?.toDoubleOrNull()?.takeIf { it.isFinite() }
+        val open = number(openIdx) ?: return CsvMarketData(error = "Row ${headerIndex + rowIndex + 2}: invalid Open value.")
+        val high = number(highIdx) ?: return CsvMarketData(error = "Row ${headerIndex + rowIndex + 2}: invalid High value.")
+        val low = number(lowIdx) ?: return CsvMarketData(error = "Row ${headerIndex + rowIndex + 2}: invalid Low value.")
+        val close = number(closeIdx) ?: return CsvMarketData(error = "Row ${headerIndex + rowIndex + 2}: invalid Close value.")
         val volume = if (volumeIdx >= 0) number(volumeIdx) else null
-        if (volumeIdx >= 0 && (volume == null || volume < 0)) return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Volume value.")
-        if (listOf(open, high, low, close).any { it <= 0 }) return CsvMarketData(error = "Row ${rowIndex + 2}: OHLC prices must be positive.")
-        if (low > minOf(open, close) || high < maxOf(open, close) || low > high) return CsvMarketData(error = "Row ${rowIndex + 2}: invalid OHLC candle geometry.")
-        closes.add(close); highs.add(high); lows.add(low)
-        if (volume != null) volumes.add(volume)
+        if (volumeIdx >= 0 && (volume == null || volume < 0)) return CsvMarketData(error = "Row ${headerIndex + rowIndex + 2}: invalid Volume value.")
+        if (listOf(open, high, low, close).any { it <= 0 }) return CsvMarketData(error = "Row ${headerIndex + rowIndex + 2}: OHLC prices must be positive.")
+        if (low > minOf(open, close) || high < maxOf(open, close) || low > high) return CsvMarketData(error = "Row ${headerIndex + rowIndex + 2}: invalid OHLC candle geometry.")
+        candles.add(Candle(date, open, high, low, close, volume))
     }
-    if (closes.size < 50) return CsvMarketData(error = "At least 50 valid OHLC rows are required; found ${closes.size}.")
-    return CsvMarketData(closes, highs, lows, volumes, volumeIdx >= 0)
+    if (candles.size < 50) return CsvMarketData(error = "At least 50 valid OHLC rows are required; found ${candles.size}.")
+    val sorted = candles.sortedBy { it.date }
+    if (sorted.map { it.date }.distinct().size != sorted.size) return CsvMarketData(error = "CSV contains duplicate dates. Please use one row per trading date.")
+    val volumesPresent = sorted.all { it.volume != null }
+    return CsvMarketData(
+        closes = sorted.map { it.close },
+        highs = sorted.map { it.high },
+        lows = sorted.map { it.low },
+        volumes = if (volumesPresent) sorted.map { it.volume!! } else emptyList(),
+        volumeAvailable = volumesPresent
+    )
 }
 
 @Composable private fun Signals(
@@ -964,7 +989,7 @@ private fun parseMarketCsv(raw: String): CsvMarketData {
             Text("Import authorized historical NIFTY OHLC or OHLCV CSV. V6.2 supports index OHLC files without inventing volume; it is not live market data.",color=MUTED,fontSize=13.sp)
             Button(onClick=onImportCsv,modifier=Modifier.fillMaxWidth()) { Text("IMPORT HISTORICAL CSV") }
             if (csvFileName.isNotBlank()) Text("Imported: $csvFileName",color=GREEN,fontSize=12.sp)
-            Text("CSV headers: Date,Open,High,Low,Close (Volume optional) • minimum 50 rows",color=MUTED,fontSize=11.sp)
+            Text("NSE Index CSV supported: Index Name, Date, Open, High, Low, Close (Volume optional) • minimum 50 rows",color=MUTED,fontSize=11.sp)
             OutlinedTextField(value=closesText,onValueChange=onCloses,label={Text("Closing prices (oldest to newest)")},modifier=Modifier.fillMaxWidth(),minLines=3)
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                 Text("Valid observations: ${closes.size}",color=MUTED,fontSize=11.sp)
