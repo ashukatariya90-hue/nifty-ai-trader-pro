@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,6 +21,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.platform.LocalContext
@@ -168,6 +172,7 @@ class MainActivity : ComponentActivity() {
     var historicalResult by remember { mutableStateOf("No synthetic historical analysis requested yet.") }
     var historicalStatus by remember { mutableStateOf("NOT RUN") }
     var historicalAnalysisJson by remember { mutableStateOf("") }
+    var historicalCandlesJson by remember { mutableStateOf("") }
 
     LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item {
@@ -275,7 +280,7 @@ class MainActivity : ComponentActivity() {
                     historicalStatus="LOADING"
                     historicalResult="Request sent to backend. Waiting for historical sample and analysis…"
                     Thread {
-                        var result="Historical sample unavailable."; var state="REQUEST FAILED"; var analysisJson=""
+                        var result="Historical sample unavailable."; var state="REQUEST FAILED"; var analysisJson=""; var candlesJson=""
                         try {
                             val connection=(URL("$apiBaseUrl/api/simulation/historical-sample?count=80").openConnection() as HttpURLConnection)
                             connection.requestMethod="GET"; connection.connectTimeout=10000; connection.readTimeout=15000
@@ -283,7 +288,7 @@ class MainActivity : ComponentActivity() {
                             val stream=if(code in 200..299) connection.inputStream else connection.errorStream
                             val raw=stream?.bufferedReader()?.use { it.readText() }.orEmpty()
                             if(code in 200..299) {
-                                val obj=JSONObject(raw); val candles=obj.getJSONArray("candles")
+                                val obj=JSONObject(raw); val candles=obj.getJSONArray("candles"); candlesJson=candles.toString()
                                 val highs=org.json.JSONArray(); val lows=org.json.JSONArray(); val closes=org.json.JSONArray(); val volumes=org.json.JSONArray()
                                 for(i in 0 until candles.length()) { val c=candles.getJSONObject(i); highs.put(c.getDouble("high")); lows.put(c.getDouble("low")); closes.put(c.getDouble("close")); volumes.put(c.getDouble("volume")) }
                                 val payload=JSONObject().put("high",highs).put("low",lows).put("close",closes).put("volume",volumes)
@@ -309,6 +314,7 @@ class MainActivity : ComponentActivity() {
                             requestStatus=state
                             historicalStatus=state
                             historicalAnalysisJson=analysisJson
+                            historicalCandlesJson=candlesJson
                             historicalResult="$state\n$result"
                             simulationFetching=false
                         }
@@ -318,6 +324,7 @@ class MainActivity : ComponentActivity() {
                 Text(historicalResult,color=if(historicalStatus=="SYNTHETIC HISTORY ANALYSED") GREEN else MUTED,fontSize=12.sp)
                 if (historicalAnalysisJson.isNotBlank()) {
                     HistoricalIndicatorCards(historicalAnalysisJson)
+                    if (historicalCandlesJson.isNotBlank()) SyntheticMarketCharts(historicalCandlesJson, historicalAnalysisJson)
                 }
             }
         }
@@ -508,6 +515,100 @@ class MainActivity : ComponentActivity() {
                 StatusRow("Live feed label","OFF")
             }
         }
+    }
+}
+
+
+private data class OhlcvPoint(val open: Double, val high: Double, val low: Double, val close: Double, val volume: Double)
+
+private fun emaSeries(values: List<Double>, period: Int): List<Double> {
+    if (values.isEmpty()) return emptyList()
+    val alpha = 2.0 / (period + 1.0)
+    val result = ArrayList<Double>(values.size)
+    var previous = values.first()
+    values.forEachIndexed { index, value ->
+        previous = if (index == 0) value else alpha * value + (1.0 - alpha) * previous
+        result.add(previous)
+    }
+    return result
+}
+
+@Composable private fun SyntheticMarketCharts(candlesJson: String, analysisJson: String) {
+    val candles = remember(candlesJson) {
+        runCatching {
+            val array = JSONArray(candlesJson)
+            (0 until array.length()).map { i ->
+                val c = array.getJSONObject(i)
+                OhlcvPoint(c.optDouble("open"), c.optDouble("high"), c.optDouble("low"),
+                    c.optDouble("close"), c.optDouble("volume"))
+            }.filter { it.high.isFinite() && it.low.isFinite() && it.close.isFinite() }
+        }.getOrDefault(emptyList())
+    }
+    val analysis = remember(analysisJson) { runCatching { JSONObject(analysisJson) }.getOrNull() }
+    if (candles.isEmpty()) return
+    val closes = candles.map { it.close }
+    val ema9 = remember(candlesJson) { emaSeries(closes, 9) }
+    val ema21 = remember(candlesJson) { emaSeries(closes, 21) }
+    val ema50 = remember(candlesJson) { emaSeries(closes, 50) }
+    PanelCard {
+        Text("SYNTHETIC CANDLESTICK CHART", fontWeight=FontWeight.Bold)
+        Pill("80 GENERATED TEST CANDLES • NOT EXCHANGE DATA", AMBER)
+        Text("OHLC candles with calculated EMA overlays. The chart is for UI and indicator education only.", color=MUTED, fontSize=11.sp)
+        Canvas(Modifier.fillMaxWidth().height(230.dp)) {
+            val left = 8f; val right = size.width - 8f
+            val top = 12f; val chartBottom = size.height - 34f
+            val volumeTop = size.height - 27f
+            val maxPrice = candles.maxOf { it.high }
+            val minPrice = candles.minOf { it.low }
+            val range = (maxPrice - minPrice).takeIf { it > 0.0 } ?: 1.0
+            val maxVol = candles.maxOf { it.volume }.coerceAtLeast(1.0)
+            val step = (right-left) / candles.size
+            fun y(price: Double) = chartBottom - (((price-minPrice)/range).toFloat() * (chartBottom-top))
+            // subtle price grid
+            for (i in 0..3) {
+                val gy = top + (chartBottom-top) * i / 3f
+                drawLine(MUTED.copy(alpha=0.18f), Offset(left,gy), Offset(right,gy), 1f)
+            }
+            candles.forEachIndexed { i, c ->
+                val x = left + step * (i + 0.5f)
+                val up = c.close >= c.open
+                val candleColor = if (up) GREEN else RED
+                drawLine(candleColor, Offset(x,y(c.high)), Offset(x,y(c.low)), 1.5f)
+                val bodyTop = minOf(y(c.open),y(c.close))
+                val bodyBottom = maxOf(y(c.open),y(c.close))
+                drawRect(candleColor, topLeft=Offset(x-step*0.28f,bodyTop),
+                    size=androidx.compose.ui.geometry.Size(step*0.56f,(bodyBottom-bodyTop).coerceAtLeast(2f)))
+                val vh = ((c.volume/maxVol).toFloat()*18f)
+                drawRect(MUTED.copy(alpha=0.42f), topLeft=Offset(x-step*0.22f,volumeTop-vh),
+                    size=androidx.compose.ui.geometry.Size(step*0.44f,vh))
+            }
+            fun drawEma(series: List<Double>, color: Color) {
+                for (i in 1 until series.size) {
+                    val x1=left+step*(i-0.5f); val x2=left+step*(i+0.5f)
+                    drawLine(color,Offset(x1,y(series[i-1])),Offset(x2,y(series[i])),2f)
+                }
+            }
+            drawEma(ema9, AMBER); drawEma(ema21, Color(0xFF7CB7FF)); drawEma(ema50, Color(0xFFC39BFF))
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+            Text("● EMA 9", color=AMBER, fontSize=10.sp)
+            Text("● EMA 21", color=Color(0xFF7CB7FF), fontSize=10.sp)
+            Text("● EMA 50", color=Color(0xFFC39BFF), fontSize=10.sp)
+            Text("■ Volume", color=MUTED, fontSize=10.sp)
+        }
+        Divider(color=MUTED.copy(alpha=0.25f))
+        Text("RSI 14 • ${analysis?.optString("rsi_14","—") ?: "—"}", fontWeight=FontWeight.SemiBold)
+        val rsi = analysis?.optDouble("rsi_14", Double.NaN) ?: Double.NaN
+        if (rsi.isFinite()) {
+            Box(Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(8.dp)).background(MUTED.copy(alpha=0.2f))) {
+                Box(Modifier.fillMaxWidth((rsi.coerceIn(0.0,100.0)/100.0).toFloat()).fillMaxHeight().background(GREEN))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween) {
+                Text("0", color=MUTED, fontSize=10.sp); Text("50", color=MUTED, fontSize=10.sp); Text("100", color=MUTED, fontSize=10.sp)
+            }
+        }
+        Text("MACD ${analysis?.optString("macd","—") ?: "—"}  •  Signal ${analysis?.optString("macd_signal_9","—") ?: "—"}  •  Histogram ${analysis?.optString("macd_histogram","—") ?: "—"}", color=MUTED, fontSize=11.sp)
+        Text("These plots use the generated synthetic candles only; no forecasts, trade signals, or real-market prices.", color=AMBER, fontSize=11.sp)
     }
 }
 
