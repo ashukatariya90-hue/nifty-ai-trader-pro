@@ -86,6 +86,8 @@ jobs:
           gradle-version: '8.7'
 
       - name: Run backend regression tests
+        env:
+          PYTHONPATH: backend
         run: |
           python -m pip install -r backend/requirements.txt
           python -m pytest -q backend/tests
