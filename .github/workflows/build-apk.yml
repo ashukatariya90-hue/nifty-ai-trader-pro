@@ -1,4 +1,4 @@
-name: Build NIFTY AI TRADER PRO V6.7.0 APK
+name: Build NIFTY AI TRADER PRO V6.8.0 APK
 
 on:
   workflow_dispatch:
@@ -10,74 +10,40 @@ jobs:
   sync-and-build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
-      - name: Extract V6.7.0 project ZIP
+      - name: Extract V6.8.0 paper execution project ZIP
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_7_READ_ONLY_STREAM_HEALTH.zip"
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::Missing $ZIP_FILE in the repository root."
-            exit 1
-          fi
-
+          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_8_PAPER_EXECUTION.zip"
+          test -f "$ZIP_FILE" || { echo "::error::Missing $ZIP_FILE in repository root."; exit 1; }
           mkdir -p /tmp/nifty-project
           unzip -q "$ZIP_FILE" -d /tmp/nifty-project
           PROJECT_DIR="/tmp/nifty-project/NIFTY_AI_TRADER_PRO_V5"
-
           test -f "$PROJECT_DIR/settings.gradle.kts"
           test -f "$PROJECT_DIR/app/build.gradle.kts"
           test -f "$PROJECT_DIR/backend/app/main.py"
-
           cp -a "$PROJECT_DIR"/. .
           test -f "backend/app/main.py"
           test -f "app/src/main/AndroidManifest.xml"
 
-      - name: Set Android app version to 6.7.0
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path("app/build.gradle.kts")
-          text = path.read_text(encoding="utf-8")
-
-          if not re.search(r'versionCode\s*=\s*\d+', text):
-              raise SystemExit("versionCode declaration not found")
-          if not re.search(r'versionName\s*=\s*"[^"]+"', text):
-              raise SystemExit("versionName declaration not found")
-
-          text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = 68', text, count=1)
-          text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "6.7.0"', text, count=1)
-          path.write_text(text, encoding="utf-8")
-
-          print("Configured Android versionCode=68, versionName=6.7.0")
-          PY
-
-      - name: Commit extracted source for backend deployment
+      - name: Commit source files for backend deployment
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git add -A
-          # Keep this workflow file under the user's control; only extracted
-          # application/backend source changes are committed by this step.
           git reset -q -- .github/workflows/build-apk.yml || true
-
           if git diff --cached --quiet; then
             echo "No extracted source changes to commit."
           else
-            git commit -m "Sync NIFTY AI TRADER PRO V6.7.0 read-only source [skip ci]"
+            git commit -m "Sync NIFTY AI TRADER PRO V6.8.0 paper execution [skip ci]"
             git push origin HEAD:main
           fi
 
@@ -107,14 +73,9 @@ jobs:
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          if [ ! -d "$SDK_ROOT" ]; then
-            echo "::error::Android SDK directory not found: $SDK_ROOT"
-            exit 1
-          fi
-
+          test -d "$SDK_ROOT"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-
           SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' 2>/dev/null | sort -V | tail -n 1)"
           if [ -z "$SDKMANAGER" ]; then
             echo "::error::sdkmanager not found under $SDK_ROOT/cmdline-tools"
@@ -137,10 +98,10 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace -PAPI_BASE_URL="https://nifty-ai-trader-pro.onrender.com" assembleDebug
 
-      - name: Upload V6.7.0 debug APK
+      - name: Upload V6.8.0 debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: NIFTY-AI-TRADER-PRO-V6-7-debug
+          name: NIFTY-AI-TRADER-PRO-V6-8-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
