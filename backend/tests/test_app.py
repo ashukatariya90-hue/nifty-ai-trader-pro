@@ -154,7 +154,7 @@ def test_current_integration_status_is_explicitly_offline():
     r = client.get("/api/v5/integration-status")
     assert r.status_code == 200
     body = r.json()
-    assert body["app_version"] == "6.5.1"
+    assert body["app_version"] == "6.6.0"
     assert body["live_data_verified"] is False
     assert body["real_orders_enabled"] is False
     assert body["angel_one"]["connected"] is False
@@ -406,3 +406,36 @@ def test_historical_replay_publishes_explicitly_delayed_stream_events():
     assert event["freshness"] == "DELAYED"
     assert event["read_only"] is True
     assert snapshot["real_orders_enabled"] is False
+
+
+def test_v66_diagnostics_reports_read_only_stream_metrics():
+    response = client.get("/api/v6/diagnostics")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["app_version"] == "6.6.0"
+    assert body["mode"] == "EDUCATIONAL_PAPER_ONLY"
+    assert body["real_orders_enabled"] is False
+    assert body["live_data_verified"] is False
+    assert "metrics" in body["stream"]
+    assert body["provider_connections"]["angel_one"]["connected"] is False
+
+
+def test_stream_diagnostics_count_accepted_and_out_of_order_events():
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    from app.providers.contracts import parse_tick
+    from app.providers.stream_manager import MarketStreamManager
+
+    manager = MarketStreamManager()
+    now = datetime.now(timezone.utc)
+    newer = parse_tick({"symbol": "NIFTY", "last_price": 22010,
+                        "exchange_timestamp": now.isoformat()}, "TEST", received_at=now)
+    older = parse_tick({"symbol": "NIFTY", "last_price": 22000,
+                        "exchange_timestamp": (now - timedelta(seconds=1)).isoformat()}, "TEST", received_at=now)
+    assert asyncio.run(manager.publish(newer)) is True
+    assert asyncio.run(manager.publish(older)) is False
+    status = manager.status()
+    assert status["metrics"]["accepted_events"] == 1
+    assert status["metrics"]["rejected_out_of_order_events"] == 1
+    assert status["last_event"]["source"] == "TEST"
+    assert status["real_orders_enabled"] is False
