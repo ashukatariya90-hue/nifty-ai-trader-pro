@@ -1,4 +1,4 @@
-name: Build NIFTY AI TRADER PRO V6.8.1 APK
+name: Build NIFTY AI TRADER PRO V6.9.0 APK
 
 on:
   workflow_dispatch:
@@ -17,11 +17,11 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Extract V6.8.1 paper accounting project ZIP
+      - name: Extract V6.9.0 persistent paper ledger project ZIP
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_8_1_PAPER_ACCOUNTING_FIX.zip"
+          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_9_PERSISTENT_PAPER_LEDGER.zip"
           if [ ! -f "$ZIP_FILE" ]; then
             echo "::error::Missing $ZIP_FILE in repository root."
             exit 1
@@ -47,7 +47,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No extracted source changes to commit."
           else
-            git commit -m "Sync NIFTY AI TRADER PRO V6.8.1 paper accounting fix [skip ci]"
+            git commit -m "Sync NIFTY AI TRADER PRO V6.9.0 persistent paper ledger [skip ci]"
             git push origin HEAD:main
           fi
 
@@ -102,10 +102,10 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace -PAPI_BASE_URL="https://nifty-ai-trader-pro.onrender.com" assembleDebug
 
-      - name: Upload V6.8.1 debug APK
+      - name: Upload V6.9.0 debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: NIFTY-AI-TRADER-PRO-V6-8-1-debug
+          name: NIFTY-AI-TRADER-PRO-V6-9-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
