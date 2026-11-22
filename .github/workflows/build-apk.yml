@@ -1,4 +1,4 @@
-name: Build NIFTY AI TRADER PRO V6.6.0 APK
+name: Build NIFTY AI TRADER PRO V6.7.0 APK
 
 on:
   workflow_dispatch:
@@ -15,11 +15,11 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Extract V6.6.0 chronological chart project ZIP
+      - name: Extract V6.7.0 read-only stream health project ZIP
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_6_READ_ONLY_DIAGNOSTICS.zip"
+          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_7_READ_ONLY_STREAM_HEALTH.zip"
           if [ ! -f "$ZIP_FILE" ]; then
             echo "::error::Upload $ZIP_FILE to the repository root first."
             exit 1
@@ -45,7 +45,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No extracted source changes to commit."
           else
-            git commit -m "Sync NIFTY AI TRADER PRO V6.6.0 backend version alignment [skip ci]"
+            git commit -m "Sync NIFTY AI TRADER PRO V6.7.0 backend version alignment [skip ci]"
             git push origin HEAD:main
           fi
 
