@@ -167,6 +167,7 @@ class MainActivity : ComponentActivity() {
     var simulatedResult by remember { mutableStateOf("No simulated snapshot requested yet.") }
     var historicalResult by remember { mutableStateOf("No synthetic historical analysis requested yet.") }
     var historicalStatus by remember { mutableStateOf("NOT RUN") }
+    var historicalAnalysisJson by remember { mutableStateOf("") }
 
     LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item {
@@ -262,7 +263,7 @@ class MainActivity : ComponentActivity() {
                         Handler(Looper.getMainLooper()).post {
                             marketSnapshot=result
                             marketFetchStatus=state
-                            simulatedResult="$state\\n$result"
+                            simulatedResult="$state\n$result"
                             simulationFetching=false
                         }
                     }.start()
@@ -274,7 +275,7 @@ class MainActivity : ComponentActivity() {
                     historicalStatus="LOADING"
                     historicalResult="Request sent to backend. Waiting for historical sample and analysis…"
                     Thread {
-                        var result="Historical sample unavailable."; var state="REQUEST FAILED"
+                        var result="Historical sample unavailable."; var state="REQUEST FAILED"; var analysisJson=""
                         try {
                             val connection=(URL("$apiBaseUrl/api/simulation/historical-sample?count=80").openConnection() as HttpURLConnection)
                             connection.requestMethod="GET"; connection.connectTimeout=10000; connection.readTimeout=15000
@@ -292,7 +293,12 @@ class MainActivity : ComponentActivity() {
                                 analysis.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
                                 val aCode=analysis.responseCode; val aStream=if(aCode in 200..299) analysis.inputStream else analysis.errorStream
                                 val aRaw=aStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                                result="SYNTHETIC HISTORICAL SAMPLE • ${candles.length()} candles\nAnalysis HTTP $aCode\n$aRaw\n\nNot actual historical exchange data."
+                                if (aCode in 200..299) {
+                                    analysisJson = aRaw
+                                    result="SYNTHETIC HISTORICAL SAMPLE • ${candles.length()} candles\nAnalysis HTTP $aCode\nSynthetic sample only; not exchange history."
+                                } else {
+                                    result="SYNTHETIC HISTORICAL SAMPLE • ${candles.length()} candles\nAnalysis HTTP $aCode\n$aRaw"
+                                }
                                 state=if(aCode in 200..299) "SYNTHETIC HISTORY ANALYSED" else "ANALYSIS HTTP $aCode"
                                 analysis.disconnect()
                             } else { result="HTTP $code\n$raw"; state="HTTP $code" }
@@ -302,13 +308,17 @@ class MainActivity : ComponentActivity() {
                             responseText=result
                             requestStatus=state
                             historicalStatus=state
-                            historicalResult="$state\\n$result"
+                            historicalAnalysisJson=analysisJson
+                            historicalResult="$state\n$result"
                             simulationFetching=false
                         }
                     }.start()
                 },enabled=!simulationFetching && apiBaseUrl.isNotBlank(),modifier=Modifier.fillMaxWidth()) { Text(if(simulationFetching) "REQUEST IN PROGRESS…" else "ANALYSE SYNTHETIC HISTORICAL SAMPLE") }
                 StatusRow("Historical test status",historicalStatus)
                 Text(historicalResult,color=if(historicalStatus=="SYNTHETIC HISTORY ANALYSED") GREEN else MUTED,fontSize=12.sp)
+                if (historicalAnalysisJson.isNotBlank()) {
+                    HistoricalIndicatorCards(historicalAnalysisJson)
+                }
             }
         }
         item {
@@ -498,6 +508,50 @@ class MainActivity : ComponentActivity() {
                 StatusRow("Live feed label","OFF")
             }
         }
+    }
+}
+
+@Composable private fun HistoricalIndicatorCards(rawJson: String) {
+    val parsed = remember(rawJson) { runCatching { JSONObject(rawJson) }.getOrNull() }
+    if (parsed == null) {
+        Text("Indicator response could not be parsed.", color=AMBER, fontSize=12.sp)
+        return
+    }
+    val trend = parsed.optString("trend_context", "NOT PROVIDED")
+    val rows = listOf(
+        "Observations" to parsed.optString("observations", "—"),
+        "EMA 9" to parsed.optString("ema_9", "—"),
+        "EMA 21" to parsed.optString("ema_21", "—"),
+        "EMA 50" to parsed.optString("ema_50", "—"),
+        "RSI 14" to parsed.optString("rsi_14", "—"),
+        "MACD" to parsed.optString("macd", "—"),
+        "MACD signal" to parsed.optString("macd_signal_9", "—"),
+        "MACD histogram" to parsed.optString("macd_histogram", "—"),
+        "VWAP" to parsed.optString("vwap", "—"),
+        "ATR 14" to parsed.optString("atr_14", "—")
+    )
+    PanelCard {
+        Text("HISTORICAL INDICATOR SUMMARY", fontWeight=FontWeight.Bold)
+        Text("Trend context: $trend", color=AMBER, fontSize=13.sp, fontWeight=FontWeight.SemiBold)
+        rows.chunked(2).forEach { pair ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                pair.forEach { (label, value) ->
+                    Column(Modifier.weight(1f).padding(vertical=5.dp)) {
+                        Text(label, color=MUTED, fontSize=11.sp)
+                        Text(value, color=GREEN, fontSize=14.sp, fontWeight=FontWeight.SemiBold)
+                    }
+                }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+        val range = parsed.optJSONObject("recent_range_reference")
+        if (range != null) {
+            Divider(color=MUTED.copy(alpha=0.25f))
+            Text("RECENT-RANGE REFERENCES", fontWeight=FontWeight.Bold, fontSize=12.sp)
+            StatusRow("Support reference", range.optString("support_zone_reference", "—"))
+            StatusRow("Resistance reference", range.optString("resistance_zone_reference", "—"))
+        }
+        Text("Descriptive calculations on synthetic sample candles only. These are not forecasts or trade signals.", color=AMBER, fontSize=11.sp)
     }
 }
 
