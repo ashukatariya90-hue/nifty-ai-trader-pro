@@ -1,4 +1,4 @@
-name: Build NIFTY AI TRADER PRO V6.8.0 APK
+name: Build NIFTY AI TRADER PRO V6.8.1 APK
 
 on:
   workflow_dispatch:
@@ -10,18 +10,22 @@ jobs:
   sync-and-build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
-      - name: Extract V6.8.0 paper execution project ZIP
+      - name: Extract V6.8.1 paper accounting project ZIP
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_8_PAPER_EXECUTION.zip"
-          test -f "$ZIP_FILE" || { echo "::error::Missing $ZIP_FILE in repository root."; exit 1; }
+          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_8_1_PAPER_ACCOUNTING_FIX.zip"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::Missing $ZIP_FILE in repository root."
+            exit 1
+          fi
           mkdir -p /tmp/nifty-project
           unzip -q "$ZIP_FILE" -d /tmp/nifty-project
           PROJECT_DIR="/tmp/nifty-project/NIFTY_AI_TRADER_PRO_V5"
@@ -32,7 +36,7 @@ jobs:
           test -f "backend/app/main.py"
           test -f "app/src/main/AndroidManifest.xml"
 
-      - name: Commit source files for backend deployment
+      - name: Commit extracted source for backend deployment
         shell: bash
         run: |
           set -euo pipefail
@@ -43,7 +47,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No extracted source changes to commit."
           else
-            git commit -m "Sync NIFTY AI TRADER PRO V6.8.0 paper execution [skip ci]"
+            git commit -m "Sync NIFTY AI TRADER PRO V6.8.1 paper accounting fix [skip ci]"
             git push origin HEAD:main
           fi
 
@@ -98,10 +102,10 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace -PAPI_BASE_URL="https://nifty-ai-trader-pro.onrender.com" assembleDebug
 
-      - name: Upload V6.8.0 debug APK
+      - name: Upload V6.8.1 debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: NIFTY-AI-TRADER-PRO-V6-8-debug
+          name: NIFTY-AI-TRADER-PRO-V6-8-1-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
