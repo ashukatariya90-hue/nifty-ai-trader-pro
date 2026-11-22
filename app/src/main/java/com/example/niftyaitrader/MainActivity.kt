@@ -205,7 +205,7 @@ class MainActivity : ComponentActivity() {
                 Pill("USER-SUPPLIED DATA • READ-ONLY",AMBER)
                 StatusRow("Selected file", if(importedCsvName.isBlank()) "NO CSV IMPORTED" else importedCsvName)
                 StatusRow("Pipeline status", csvResearchStatus)
-                Text("The CSV imported in Analysis is sent to the backend for OHLCV validation, multi-factor context and chronological walk-forward research. Source authenticity is not independently verified.",color=MUTED,fontSize=12.sp)
+                Text("The CSV imported in Analysis is sent to the backend for OHLC/OHLCV validation, multi-factor context and chronological walk-forward research. Source authenticity is not independently verified.",color=MUTED,fontSize=12.sp)
                 Button(
                     onClick={
                         if(csvResearchBusy || apiBaseUrl.isBlank() || importedCsv.isBlank()) return@Button
@@ -335,6 +335,11 @@ Full response: $raw"""
                 ) { Text("REFRESH REPLAY STATUS") }
                 if(csvResearchResult.isNotBlank()) Text(csvResearchResult,color=if(csvResearchStatus.startsWith("RESEARCH COMPLETE")) GREEN else MUTED,fontSize=11.sp)
                 Text("Minimum 50 valid OHLCV rows. Date-only daily rows are normalized to UTC midnight for ordering; timezone-naive intraday timestamps are rejected. No missing bars are invented.",color=AMBER,fontSize=11.sp)
+            }
+        }
+        item {
+            PanelCard {
+                HistoricalOhlcChart(importedCsv)
             }
         }
         item {
@@ -776,6 +781,96 @@ private fun postJson(url: String, payload: JSONObject): Pair<Int, String> {
     val accuracy = if (obj.isNull("directional_accuracy_pct")) "N/A" else "${obj.optDouble("directional_accuracy_pct")}%"
     StatusRow("Historical directional accuracy",accuracy)
     StatusRow("Evaluation coverage","${obj.optDouble("coverage_pct")}%")
+}
+
+private data class HistoricalBar(val date: String, val open: Double, val high: Double, val low: Double, val close: Double)
+
+@Composable private fun HistoricalOhlcChart(csvText: String) {
+    val bars = remember(csvText) {
+        runCatching {
+            val lines = csvText.removePrefix("\uFEFF").lines().filter { it.isNotBlank() }
+            val headerAt = lines.indexOfFirst { line ->
+                val h = line.split(",").map { it.trim().trim('"').lowercase().replace(Regex("[^a-z0-9]"), "") }.toSet()
+                h.any { it in setOf("date", "indexdate", "tradedate") } &&
+                    h.any { it in setOf("open", "openindexvalue", "openprice") } &&
+                    h.any { it in setOf("high", "highindexvalue", "highprice") } &&
+                    h.any { it in setOf("low", "lowindexvalue", "lowprice") } &&
+                    h.any { it in setOf("close", "closingindexvalue", "closeindexvalue", "closingprice") }
+            }
+            if (headerAt < 0) emptyList() else {
+                val headers = lines[headerAt].split(",").map { it.trim().trim('"').lowercase().replace(Regex("[^a-z0-9]"), "") }
+                fun col(names: Set<String>) = headers.indexOfFirst { it in names }
+                val di=col(setOf("date","indexdate","tradedate"))
+                val oi=col(setOf("open","openindexvalue","openprice"))
+                val hi=col(setOf("high","highindexvalue","highprice"))
+                val li=col(setOf("low","lowindexvalue","lowprice"))
+                val ci=col(setOf("close","closingindexvalue","closeindexvalue","closingprice"))
+                lines.drop(headerAt+1).mapNotNull { line ->
+                    val p=line.split(",").map { it.trim().trim('"').replace(",","") }
+                    if (listOf(di,oi,hi,li,ci).any { it<0 || it>=p.size }) null else {
+                        val o=p[oi].toDoubleOrNull(); val h=p[hi].toDoubleOrNull()
+                        val l=p[li].toDoubleOrNull(); val c=p[ci].toDoubleOrNull()
+                        if (o==null || h==null || l==null || c==null || l>minOf(o,c) || h<maxOf(o,c)) null
+                        else HistoricalBar(p[di],o,h,l,c)
+                    }
+                }.takeLast(120)
+            }
+        }.getOrDefault(emptyList())
+    }
+    Text("HISTORICAL NIFTY OHLC CHART",fontWeight=FontWeight.Bold,fontSize=15.sp)
+    Pill("USER-SUPPLIED HISTORICAL DATA • NOT LIVE",AMBER)
+    if (bars.isEmpty()) {
+        Text("Import a supported NSE OHLC CSV in Analysis to display its historical candles.",color=MUTED,fontSize=12.sp)
+        return
+    }
+    Text("${bars.size} candles • ${bars.first().date} to ${bars.last().date}",color=MUTED,fontSize=11.sp)
+    Text("EMA 9 / 21 overlays are calculated from the supplied closing prices. No volume is invented.",color=MUTED,fontSize=11.sp)
+    val closes=bars.map { it.close }
+    fun ema(period:Int): List<Double> {
+        if (closes.isEmpty()) return emptyList()
+        val alpha=2.0/(period+1.0)
+        val out=ArrayList<Double>(closes.size)
+        var value=closes.take(period.coerceAtMost(closes.size)).average()
+        for (i in closes.indices) {
+            if (i<period-1) out.add(Double.NaN)
+            else {
+                if (i==period-1) value=closes.take(period).average()
+                else value=closes[i]*alpha+value*(1-alpha)
+                out.add(value)
+            }
+        }
+        return out
+    }
+    val e9=ema(9); val e21=ema(21)
+    Canvas(Modifier.fillMaxWidth().height(260.dp)) {
+        val left=8f; val right=size.width-8f; val top=10f; val bottom=size.height-10f
+        val maxP=bars.maxOf { it.high }; val minP=bars.minOf { it.low }
+        val range=(maxP-minP).takeIf { it>0.0 } ?: 1.0
+        val step=(right-left)/bars.size
+        fun y(v:Double)=bottom-(((v-minP)/range).toFloat()*(bottom-top))
+        for (i in 0..4) {
+            val gy=top+(bottom-top)*i/4f
+            drawLine(MUTED.copy(alpha=.22f),Offset(left,gy),Offset(right,gy),1f)
+        }
+        bars.forEachIndexed { i,b ->
+            val x=left+step*(i+.5f); val color=if(b.close>=b.open) GREEN else RED
+            drawLine(color,Offset(x,y(b.high)),Offset(x,y(b.low)),1.4f)
+            val bt=minOf(y(b.open),y(b.close)); val bb=maxOf(y(b.open),y(b.close))
+            drawRect(color,Offset(x-step*.30f,bt),androidx.compose.ui.geometry.Size(step*.60f,(bb-bt).coerceAtLeast(2f)))
+        }
+        fun line(values:List<Double>, color:Color) {
+            for(i in 1 until values.size) if(values[i-1].isFinite() && values[i].isFinite()) {
+                val x1=left+step*(i-.5f); val x2=left+step*(i+.5f)
+                drawLine(color,Offset(x1,y(values[i-1])),Offset(x2,y(values[i])),2f)
+            }
+        }
+        line(e9,AMBER); line(e21,Color(0xFF7CB7FF))
+    }
+    Row(horizontalArrangement=Arrangement.spacedBy(14.dp)) {
+        Text("● EMA 9",color=AMBER,fontSize=11.sp)
+        Text("● EMA 21",color=Color(0xFF7CB7FF),fontSize=11.sp)
+        Text("● OHLC candles",color=MUTED,fontSize=11.sp)
+    }
 }
 
 @Composable private fun SyntheticMarketCharts(candlesJson: String, analysisJson: String, selectedWindow: Int, onWindowChange: (Int) -> Unit) {
