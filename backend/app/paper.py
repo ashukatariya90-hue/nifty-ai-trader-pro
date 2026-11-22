@@ -81,7 +81,9 @@ class PaperLedger:
             if gross + fee > self.cash + 1e-9:
                 raise ValueError("insufficient virtual cash for fill including fees")
             new_qty = position["quantity"] + qty
-            avg = ((position["quantity"] * position["average_price"]) + gross) / new_qty
+            # Include the entry fee in cost basis so realized P&L later
+            # accounts for both entry-side and exit-side fees.
+            avg = ((position["quantity"] * position["average_price"]) + gross + fee) / new_qty
             self.cash -= gross + fee
             position = {"quantity": new_qty, "average_price": avg}
         else:

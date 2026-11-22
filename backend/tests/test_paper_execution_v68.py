@@ -63,3 +63,30 @@ def test_paper_notional_limit_and_no_real_execution():
     assert response.status_code == 400
     ledger = client.get("/api/paper/ledger").json()
     assert ledger["real_orders_enabled"] is False
+
+
+def test_round_trip_realized_pnl_includes_entry_and_exit_fees():
+    created = client.post("/api/paper/orders", json={
+        "side": "BUY", "quantity": 1, "reference_price": 100,
+        "symbol": "FEECASE", "client_order_id": "fee-round-trip"
+    }).json()
+    assert created["status"] == "ACCEPTED"
+    assert client.post(
+        f"/api/paper/orders/{created['order_id']}/fill",
+        json={"fill_price": 100}
+    ).status_code == 200
+
+    sold = client.post("/api/paper/orders", json={
+        "side": "SELL", "quantity": 1, "reference_price": 150,
+        "symbol": "FEECASE", "client_order_id": "fee-round-trip-exit"
+    }).json()
+    assert sold["status"] == "ACCEPTED"
+    assert client.post(
+        f"/api/paper/orders/{sold['order_id']}/fill",
+        json={"fill_price": 150}
+    ).status_code == 200
+
+    ledger = client.get("/api/paper/ledger").json()
+    # 0.10% entry fee = 0.10; 0.10% exit fee = 0.15.
+    assert ledger["realized_pnl"] == 49.75
+    assert ledger["positions"].get("FEECASE") is None

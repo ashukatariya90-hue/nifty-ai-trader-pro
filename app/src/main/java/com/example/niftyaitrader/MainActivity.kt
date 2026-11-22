@@ -44,7 +44,7 @@ private val AMBER = Color(0xFFFFC76B)
 private val RED = Color(0xFFFF7777)
 
 data class Position(val id:Int,val symbol:String,val side:String,val qty:Int,val entry:Double,val sl:Double,val target:Double)
-data class Trade(val symbol:String,val side:String,val qty:Int,val entry:Double,val exit:Double,val pnl:Double)
+data class Trade(val symbol:String,val side:String,val qty:Int,val entry:Double,val exit:Double,val pnl:Double,val fees:Double=0.0)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContent { App() } }
@@ -97,17 +97,32 @@ class MainActivity : ComponentActivity() {
         val saved = runCatching { JSONArray(prefs.getString("history", "[]")) }.getOrNull()
         if (saved != null) for (i in 0 until saved.length()) runCatching {
             val o = saved.getJSONObject(i)
-            add(Trade(o.getString("symbol"),o.getString("side"),o.getInt("qty"),o.getDouble("entry"),o.getDouble("exit"),o.getDouble("pnl")))
+            val tradeSymbol=o.getString("symbol")
+            val tradeSide=o.getString("side")
+            val tradeQty=o.getInt("qty")
+            val tradeEntry=o.getDouble("entry")
+            val tradeExit=o.getDouble("exit")
+            val storedPnl=o.getDouble("pnl")
+            val hasFee=o.has("fees")
+            val tradeFees=if(hasFee) o.getDouble("fees") else
+                kotlin.math.round((tradeEntry+tradeExit)*tradeQty*0.001*100.0)/100.0
+            val netPnl=if(hasFee) storedPnl else
+                kotlin.math.round((storedPnl-tradeFees)*100.0)/100.0
+            add(Trade(tradeSymbol,tradeSide,tradeQty,tradeEntry,tradeExit,netPnl,tradeFees))
         }
     } }
     LaunchedEffect(positions.size, history.size) {
         val posJson = JSONArray().apply { positions.forEach { p -> put(JSONObject().put("id",p.id).put("symbol",p.symbol).put("side",p.side).put("qty",p.qty).put("entry",p.entry).put("sl",p.sl).put("target",p.target)) } }
-        val histJson = JSONArray().apply { history.forEach { t -> put(JSONObject().put("symbol",t.symbol).put("side",t.side).put("qty",t.qty).put("entry",t.entry).put("exit",t.exit).put("pnl",t.pnl)) } }
+        val histJson = JSONArray().apply { history.forEach { t -> put(JSONObject().put("symbol",t.symbol).put("side",t.side).put("qty",t.qty).put("entry",t.entry).put("exit",t.exit).put("pnl",t.pnl).put("fees",t.fees)) } }
         prefs.edit().putString("positions",posJson.toString()).putString("history",histJson.toString()).apply()
     }
     val money = remember { NumberFormat.getCurrencyInstance(Locale("en","IN")) }
+    // The Android paper ledger is local-only. Closed net P&L is added to capital;
+    // open notional and entry-side simulated fees remain reserved until close.
     val used by remember { derivedStateOf { positions.sumOf { it.entry * it.qty } } }
-    val free by remember { derivedStateOf { 500000.0 - used } }
+    val openEntryFees by remember { derivedStateOf { positions.sumOf { kotlin.math.round(it.entry * it.qty * 0.001 * 100.0) / 100.0 } } }
+    val realizedNetPnl by remember { derivedStateOf { history.sumOf { it.pnl } } }
+    val free by remember { derivedStateOf { 500000.0 + realizedNetPnl - used - openEntryFees } }
 
     MaterialTheme(colorScheme = darkColorScheme(background=BG, surface=PANEL, primary=GREEN, onBackground=Color.White, onSurface=Color.White)) {
         Scaffold(containerColor=BG, bottomBar={
@@ -137,15 +152,23 @@ class MainActivity : ComponentActivity() {
                             s==null||tg==null||s<=0||tg<=0 -> "Stop-loss aur target enter karein."
                             side=="BUY" && !(s<e && tg>e) -> "BUY ke liye SL entry se neeche aur target upar hona chahiye."
                             side=="SELL" && !(s>e && tg<e) -> "SELL ke liye SL entry se upar aur target neeche hona chahiye."
-                            e*q>free -> "Virtual balance kam hai."
-                            else -> { positions.add(Position(nextId++,symbol.trim().uppercase(),side,q,e,s,tg)); entry="";sl="";target="";"Virtual order record hua; broker ko kuch nahi bheja gaya." }
+                            e*q + kotlin.math.round(e*q*0.001*100.0)/100.0 > free -> "Virtual balance kam hai (entry fee included)."
+                            else -> { positions.add(Position(nextId++,symbol.trim().uppercase(),side,q,e,s,tg)); entry="";sl="";target="";"Virtual order record hua; broker ko kuch nahi bheja gaya. Entry fee 0.10% reserved." }
                         }
                     })
                     "Positions" -> OpenPositions(positions,exit,{exit=it},money,note,{p->
                         val x=exit.toDoubleOrNull()
                         if(x==null||x<=0) note="Valid assumed exit price enter karein."
-                        else { val pnl=if(p.side=="BUY")(x-p.entry)*p.qty else (p.entry-x)*p.qty
-                            history.add(0,Trade(p.symbol,p.side,p.qty,p.entry,x,pnl));positions.remove(p);exit="";note="Virtual position close ho gayi." }
+                        else {
+                            val grossPnl=if(p.side=="BUY")(x-p.entry)*p.qty else (p.entry-x)*p.qty
+                            val entryFee=kotlin.math.round(p.entry*p.qty*0.001*100.0)/100.0
+                            val exitFee=kotlin.math.round(x*p.qty*0.001*100.0)/100.0
+                            val totalFees=entryFee+exitFee
+                            val netPnl=kotlin.math.round((grossPnl-totalFees)*100.0)/100.0
+                            history.add(0,Trade(p.symbol,p.side,p.qty,p.entry,x,netPnl,totalFees))
+                            positions.remove(p);exit=""
+                            note="Virtual position close ho gayi. Gross P&L ${money.format(grossPnl)}, fees ${money.format(totalFees)}, net P&L ${money.format(netPnl)}."
+                        }
                     })
                     else -> History(history,money)
                 }
@@ -1265,6 +1288,7 @@ private fun calcRsi(values:List<Double>,period:Int):Double? {
         items(items) { t -> PanelCard {
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("${t.symbol} • ${t.side}",fontWeight=FontWeight.Bold);Text(money.format(t.pnl),color=if(t.pnl>=0)GREEN else RED,fontWeight=FontWeight.Bold)}
             Text("Qty ${t.qty} | Entry ${money.format(t.entry)} | Exit ${money.format(t.exit)}",color=MUTED,fontSize=12.sp)
+            Text("Net P&L after simulated fees • Fees ${money.format(t.fees)}",color=MUTED,fontSize=11.sp)
         } }
     }
 }

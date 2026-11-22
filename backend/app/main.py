@@ -22,7 +22,7 @@ from .providers.stream_manager import MarketStreamManager
 from .providers.contracts import parse_tick
 from .providers.nse_mcp import discover_tools, call_readonly_tool
 
-app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.8.0")
+app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.8.1")
 ledger = PaperLedger(500000)
 market_provider = AuthorizedFeedAdapter()
 angel_one_provider = AngelOneMarketDataAdapter()
@@ -81,7 +81,7 @@ async def nse_public_query(payload: dict):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "6.8.0",
+    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "6.8.1",
             "mode": "EDUCATIONAL_PAPER_ONLY", "real_orders_enabled": False, "virtual_capital": 500000}
 
 @app.get("/api/providers/status")
