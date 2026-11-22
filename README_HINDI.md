@@ -76,3 +76,11 @@ The workflow builds a debug APK for testing; it is not a Play Store release buil
 
 ## V6.0 Phase 3
 Android dashboard ab backend ke multi-factor analysis, historical dataset validation aur walk-forward research endpoints ko call karta hai. Synthetic sample sirf integration testing ke liye hai. App educational/paper-only hai; real orders disabled hain.
+
+## V6.1 Historical CSV Research Upgrade
+- Analysis tab me imported historical CSV ab Momentum tab ke `IMPORTED HISTORICAL CSV RESEARCH` panel se backend ko bheja ja sakta hai.
+- Backend OHLCV structure validation, multi-factor descriptive context aur chronological walk-forward baseline ek hi request me deta hai.
+- Kam se kam 50 valid rows, required Date/Open/High/Low/Close/Volume columns aur strictly increasing timestamps zaroori hain.
+- Date-only daily candles ko sirf ordering ke liye UTC midnight par normalize kiya jata hai; intraday time infer nahi hota. Time ke saath timestamp me timezone offset zaroori hai.
+- Dataset structure valid hone ka matlab exchange authenticity ya licence verified hona nahi hai. Missing candles fabricate nahi hote.
+- V6.1 paper-only/read-only hai; koi BUY/SELL instruction ya real order execution nahi.

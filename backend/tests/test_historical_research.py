@@ -67,3 +67,42 @@ def test_walk_forward_rejects_invalid_or_short_series():
         evaluate_walk_forward([1, 2, 3])
     with pytest.raises(ValueError):
         evaluate_walk_forward([1.0] * 40 + [float("inf")])
+
+
+def csv_text(n=80, date_only=False):
+    lines = ["Date,Open,High,Low,Close,Volume"]
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for i in range(n):
+        close = 25000 + i * 1.5 + math.sin(i / 4) * 8
+        stamp = (start + timedelta(days=i)).date().isoformat() if date_only else (start + timedelta(minutes=5 * i)).isoformat()
+        lines.append(f"{stamp},{close-1:.4f},{close+2:.4f},{close-2:.4f},{close:.4f},{1000+i}")
+    return "\n".join(lines)
+
+
+def test_v61_csv_pipeline_runs_validation_factors_and_walk_forward():
+    from app.historical_research import analyze_historical_csv
+    result = analyze_historical_csv(csv_text())
+    assert result["engine"] == "V6_1_HISTORICAL_CSV_RESEARCH"
+    assert result["rows"] == 80
+    assert result["dataset_validation"]["valid"] is True
+    assert result["multi_factor"]["observations"] == 80
+    assert result["walk_forward"]["out_of_sample_predictions"] > 0
+    assert result["source_authenticity"] == "NOT_VERIFIED"
+    assert result["paper_only"] is True
+    assert result["real_orders_enabled"] is False
+
+
+def test_v61_csv_pipeline_accepts_date_only_daily_rows_without_inventing_time():
+    from app.historical_research import analyze_historical_csv
+    result = analyze_historical_csv(csv_text(date_only=True))
+    assert result["date_only_rows_normalized_to_utc_midnight"] == 80
+    assert "UTC midnight" in result["limitations"][1]
+
+
+def test_v61_csv_pipeline_rejects_short_or_bad_timestamp_data():
+    from app.historical_research import analyze_historical_csv
+    with pytest.raises(ValueError, match="at least 50"):
+        analyze_historical_csv(csv_text(49))
+    bad = csv_text().replace("2026-01-01T00:05:00+00:00", "2026-01-01T00:05:00", 1)
+    with pytest.raises(ValueError, match="timezone"):
+        analyze_historical_csv(bad)

@@ -124,7 +124,7 @@ class MainActivity : ComponentActivity() {
                 when(tab) {
                     "Home" -> Home(positions.size,history.size,free,money)
                     "Analysis" -> Signals(closeInput,{closeInput=it},csvRaw,csvFileName,{ csvPicker.launch(arrayOf("text/*", "application/vnd.ms-excel", "application/csv")) },{ closeInput=""; csvRaw=""; csvFileName=""; note="CSV and manual input cleared." })
-                    "Momentum" -> MomentumScreen(prefs, BuildConfig.API_BASE_URL)
+                    "Momentum" -> MomentumScreen(prefs, BuildConfig.API_BASE_URL, csvRaw, csvFileName)
                     "Integration" -> IntegrationStatus(prefs, BuildConfig.API_BASE_URL)
                     "Paper" -> Paper(symbol,{symbol=it.uppercase()},side,{side=it},qty,{qty=it},entry,{entry=it},sl,{sl=it},target,{target=it},free,money,note,{
                         val q=qty.toIntOrNull(); val e=entry.toDoubleOrNull(); val s=sl.toDoubleOrNull(); val tg=target.toDoubleOrNull()
@@ -155,7 +155,7 @@ class MainActivity : ComponentActivity() {
 
 
 
-@Composable private fun MomentumScreen(prefs: android.content.SharedPreferences, defaultApiBaseUrl: String) {
+@Composable private fun MomentumScreen(prefs: android.content.SharedPreferences, defaultApiBaseUrl: String, importedCsv: String, importedCsvName: String) {
     var apiBaseUrl by remember {
         mutableStateOf(prefs.getString("api_base_url", defaultApiBaseUrl).orEmpty().trim().trimEnd('/'))
     }
@@ -180,6 +180,9 @@ class MainActivity : ComponentActivity() {
     var chartWindow by remember { mutableIntStateOf(80) }
     var requestSectionExpanded by remember { mutableStateOf(false) }
     var engineResponseExpanded by remember { mutableStateOf(false) }
+    var csvResearchBusy by remember { mutableStateOf(false) }
+    var csvResearchStatus by remember { mutableStateOf("NO CSV RESEARCH RUN") }
+    var csvResearchResult by remember { mutableStateOf("") }
 
     LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item {
@@ -190,6 +193,75 @@ class MainActivity : ComponentActivity() {
                 StatusRow("Backend URL",if(apiBaseUrl.isBlank()) "NOT SET" else "CONFIGURED")
                 StatusRow("Analysis","Multi-factor + historical research")
                 StatusRow("Request",requestStatus)
+            }
+        }
+        item {
+            PanelCard {
+                Text("IMPORTED HISTORICAL CSV RESEARCH",fontSize=15.sp,fontWeight=FontWeight.Bold)
+                Pill("USER-SUPPLIED DATA • READ-ONLY",AMBER)
+                StatusRow("Selected file", if(importedCsvName.isBlank()) "NO CSV IMPORTED" else importedCsvName)
+                StatusRow("Pipeline status", csvResearchStatus)
+                Text("The CSV imported in Analysis is sent to the backend for OHLCV validation, multi-factor context and chronological walk-forward research. Source authenticity is not independently verified.",color=MUTED,fontSize=12.sp)
+                Button(
+                    onClick={
+                        if(csvResearchBusy || apiBaseUrl.isBlank() || importedCsv.isBlank()) return@Button
+                        csvResearchBusy = true
+                        csvResearchStatus = "RUNNING"
+                        csvResearchResult = "Submitting imported historical CSV for validation and research…"
+                        Thread {
+                            var bodyText = "Research request failed."
+                            var state = "REQUEST FAILED"
+                            try {
+                                val connection = (URL("$apiBaseUrl/api/research/historical-csv").openConnection() as HttpURLConnection)
+                                connection.requestMethod = "POST"
+                                connection.connectTimeout = 15000
+                                connection.readTimeout = 45000
+                                connection.doOutput = true
+                                connection.setRequestProperty("Content-Type", "text/csv; charset=utf-8")
+                                connection.setRequestProperty("Accept", "application/json")
+                                connection.outputStream.use { it.write(importedCsv.toByteArray(Charsets.UTF_8)) }
+                                val code = connection.responseCode
+                                val stream = if(code in 200..299) connection.inputStream else connection.errorStream
+                                val raw = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                                if(code in 200..299) {
+                                    val root = JSONObject(raw)
+                                    val validation = root.optJSONObject("dataset_validation")
+                                    val factors = root.optJSONObject("multi_factor")
+                                    val walk = root.optJSONObject("walk_forward")
+                                    val accuracyText = if (walk == null || walk.isNull("directional_accuracy_pct")) "Unavailable" else "${walk.optDouble("directional_accuracy_pct")}%"
+                                    bodyText = """HISTORICAL CSV RESEARCH COMPLETE
+Rows: ${root.optInt("rows")}
+Source authenticity: ${root.optString("source_authenticity")}
+Dataset valid: ${validation?.optBoolean("valid")}
+Gap check: ${if (validation == null || validation.isNull("interval_seconds_checked")) "NOT RUN (interval not supplied)" else validation.optInt("gap_count").toString()}
+Factor agreement: ${factors?.optString("factor_agreement")}
+Context score: ${factors?.optInt("directional_context_score")}
+Walk-forward observations: ${walk?.optInt("out_of_sample_predictions")}
+Directional accuracy: $accuracyText
+No trade signal or real orders are generated.
+
+Full response: $raw"""
+                                    state = "RESEARCH COMPLETE • SOURCE UNVERIFIED"
+                                } else {
+                                    bodyText = "HTTP $code\n$raw"
+                                    state = "HTTP $code"
+                                }
+                                connection.disconnect()
+                            } catch(e:Exception) {
+                                bodyText = e.message ?: "Network error"
+                            }
+                            Handler(Looper.getMainLooper()).post {
+                                csvResearchResult = bodyText
+                                csvResearchStatus = state
+                                csvResearchBusy = false
+                            }
+                        }.start()
+                    },
+                    enabled = !csvResearchBusy && apiBaseUrl.isNotBlank() && importedCsv.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text(if(csvResearchBusy) "RESEARCH RUNNING…" else "ANALYSE IMPORTED HISTORICAL CSV") }
+                if(csvResearchResult.isNotBlank()) Text(csvResearchResult,color=if(csvResearchStatus.startsWith("RESEARCH COMPLETE")) GREEN else MUTED,fontSize=11.sp)
+                Text("Minimum 50 valid OHLCV rows. Date-only daily rows are normalized to UTC midnight for ordering; timezone-naive intraday timestamps are rejected. No missing bars are invented.",color=AMBER,fontSize=11.sp)
             }
         }
         item {
@@ -223,11 +295,11 @@ class MainActivity : ComponentActivity() {
                                     result=if(event==null) {
                                         "NO VERIFIED EVENT CACHED. Backend reports ${root.optString("status","UNKNOWN")}. No price will be estimated or fabricated."
                                     } else {
-                                        "NIFTY: ${event.optDouble("last_price")}\\nSource: ${event.optString("source")}\\nFreshness: ${event.optString("freshness")}\\nExchange time: ${event.optString("exchange_timestamp")}\\nRead-only: ${event.optBoolean("read_only")}"
+                                        "NIFTY: ${event.optDouble("last_price")}\nSource: ${event.optString("source")}\nFreshness: ${event.optString("freshness")}\nExchange time: ${event.optString("exchange_timestamp")}\nRead-only: ${event.optBoolean("read_only")}"
                                     }
                                     status=if(event==null) "NO EVENT" else event.optString("freshness","AVAILABLE")
                                 } else {
-                                    result="HTTP $code\\n$raw"
+                                    result="HTTP $code\n$raw"
                                     status="HTTP $code"
                                 }
                                 connection.disconnect()
@@ -334,9 +406,9 @@ class MainActivity : ComponentActivity() {
                                     val allOk = multiCode in 200..299 && validationCode in 200..299 && walkCode in 200..299
                                     researchStatus = if (allOk) "ALL RESEARCH CHECKS PASSED" else
                                         "PARTIAL: multi=$multiCode validation=$validationCode walk=$walkCode"
-                                    result="SYNTHETIC SAMPLE • ${candles.length()} candles\\nMarket context HTTP $aCode; multi-factor HTTP $multiCode; data validation HTTP $validationCode; walk-forward HTTP $walkCode.\\nSynthetic sample only; not exchange history."
+                                    result="SYNTHETIC SAMPLE • ${candles.length()} candles\nMarket context HTTP $aCode; multi-factor HTTP $multiCode; data validation HTTP $validationCode; walk-forward HTTP $walkCode.\nSynthetic sample only; not exchange history."
                                 } else {
-                                    result="SYNTHETIC HISTORICAL SAMPLE • ${candles.length()} candles\\nAnalysis HTTP $aCode\\n$aRaw"
+                                    result="SYNTHETIC HISTORICAL SAMPLE • ${candles.length()} candles\nAnalysis HTTP $aCode\n$aRaw"
                                     researchStatus = "MARKET CONTEXT HTTP $aCode"
                                 }
                                 state=if(aCode in 200..299) "SYNTHETIC HISTORY ANALYSED" else "ANALYSIS HTTP $aCode"
@@ -824,25 +896,34 @@ private fun parseMarketCsv(raw: String): CsvMarketData {
     if (lines.size < 2) return CsvMarketData(error = "CSV needs a header and at least one data row.")
     val header = splitCsvRow(lines.first()).map { it.lowercase().replace("_", "").replace(" ", "") }
     fun col(vararg names: String) = header.indexOfFirst { it in names }
-    val closeIdx = col("close", "closingprice", "closeprice", "last")
-    if (closeIdx < 0) return CsvMarketData(error = "A 'Close' column is required. Expected columns: Date,Open,High,Low,Close,Volume.")
+    val dateIdx = col("date")
+    val openIdx = col("open")
     val highIdx = col("high")
     val lowIdx = col("low")
-    val volumeIdx = col("volume", "vol")
+    val closeIdx = col("close")
+    val volumeIdx = col("volume")
+    if (listOf(dateIdx, openIdx, highIdx, lowIdx, closeIdx, volumeIdx).any { it < 0 }) {
+        return CsvMarketData(error = "Required columns: Date,Open,High,Low,Close,Volume.")
+    }
     val closes = mutableListOf<Double>()
     val highs = mutableListOf<Double>()
     val lows = mutableListOf<Double>()
     val volumes = mutableListOf<Double>()
-    for (line in lines.drop(1)) {
+    for ((rowIndex, line) in lines.drop(1).withIndex()) {
         val cells = splitCsvRow(line)
-        fun number(index: Int): Double? = if (index < 0 || index >= cells.size) null else cells[index].replace(",", "").toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }
-        val close = number(closeIdx) ?: continue
-        closes.add(close)
-        number(highIdx)?.let { highs.add(it) }
-        number(lowIdx)?.let { lows.add(it) }
-        number(volumeIdx)?.let { volumes.add(it) }
+        val date = cells.getOrNull(dateIdx)?.trim().orEmpty()
+        if (date.isBlank()) return CsvMarketData(error = "Row ${rowIndex + 2}: Date is required.")
+        fun number(index: Int): Double? = cells.getOrNull(index)?.replace(",", "")?.toDoubleOrNull()?.takeIf { it.isFinite() }
+        val open = number(openIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Open value.")
+        val high = number(highIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid High value.")
+        val low = number(lowIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Low value.")
+        val close = number(closeIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Close value.")
+        val volume = number(volumeIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Volume value.")
+        if (listOf(open, high, low, close).any { it <= 0 } || volume < 0) return CsvMarketData(error = "Row ${rowIndex + 2}: OHLC must be positive and volume non-negative.")
+        if (low > minOf(open, close) || high < maxOf(open, close) || low > high) return CsvMarketData(error = "Row ${rowIndex + 2}: invalid OHLC candle geometry.")
+        closes.add(close); highs.add(high); lows.add(low); volumes.add(volume)
     }
-    if (closes.isEmpty()) return CsvMarketData(error = "No valid positive Close values were found.")
+    if (closes.size < 50) return CsvMarketData(error = "At least 50 valid OHLCV rows are required for V6.1 research; found ${closes.size}.")
     return CsvMarketData(closes, highs, lows, volumes)
 }
 
@@ -877,10 +958,10 @@ private fun parseMarketCsv(raw: String): CsvMarketData {
         item { PanelCard {
             Text("MARKET ANALYSIS LAB",fontSize=18.sp,fontWeight=FontWeight.Bold)
             Pill("EDUCATIONAL • NOT A TRADE SIGNAL",AMBER)
-            Text("Import an authorized historical OHLCV CSV. Data is processed on this device; it is not live market data.",color=MUTED,fontSize=13.sp)
+            Text("Import an authorized historical OHLCV CSV. V6.1 can send it to the read-only historical research pipeline; it is not live market data.",color=MUTED,fontSize=13.sp)
             Button(onClick=onImportCsv,modifier=Modifier.fillMaxWidth()) { Text("IMPORT HISTORICAL CSV") }
             if (csvFileName.isNotBlank()) Text("Imported: $csvFileName",color=GREEN,fontSize=12.sp)
-            Text("CSV header required: Date,Open,High,Low,Close,Volume",color=MUTED,fontSize=11.sp)
+            Text("CSV header required: Date,Open,High,Low,Close,Volume • minimum 50 rows",color=MUTED,fontSize=11.sp)
             OutlinedTextField(value=closesText,onValueChange=onCloses,label={Text("Closing prices (oldest to newest)")},modifier=Modifier.fillMaxWidth(),minLines=3)
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                 Text("Valid observations: ${closes.size}",color=MUTED,fontSize=11.sp)

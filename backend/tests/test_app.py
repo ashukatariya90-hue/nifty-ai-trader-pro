@@ -154,7 +154,7 @@ def test_current_integration_status_is_explicitly_offline():
     r = client.get("/api/v5/integration-status")
     assert r.status_code == 200
     body = r.json()
-    assert body["app_version"] == "6.0.0"
+    assert body["app_version"] == "6.1.0"
     assert body["live_data_verified"] is False
     assert body["real_orders_enabled"] is False
     assert body["angel_one"]["connected"] is False
@@ -273,3 +273,30 @@ def test_v6_research_endpoints_accept_synthetic_integration_sample():
     walk = client.post("/api/research/walk-forward", json={"close_prices": payload["close"], "min_history": 30})
     assert walk.status_code == 200
     assert walk.json()["is_trade_signal"] is False
+
+
+def test_v61_historical_csv_research_endpoint_returns_full_pipeline():
+    from datetime import datetime, timedelta, timezone
+    rows = ["Date,Open,High,Low,Close,Volume"]
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for i in range(60):
+        close = 25000 + i * 1.2
+        stamp = (start + timedelta(minutes=5*i)).isoformat()
+        rows.append(f"{stamp},{close-1},{close+2},{close-2},{close},{1000+i}")
+    response = client.post("/api/research/historical-csv", content="\n".join(rows), headers={"content-type": "text/csv"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["engine"] == "V6_1_HISTORICAL_CSV_RESEARCH"
+    assert body["dataset_validation"]["valid"] is True
+    assert body["multi_factor"]["classification"] == "DESCRIPTIVE_HISTORICAL_CONTEXT_ONLY"
+    assert body["walk_forward"]["is_trade_signal"] is False
+
+
+def test_v61_historical_csv_endpoint_rejects_short_dataset():
+    rows = ["Date,Open,High,Low,Close,Volume"]
+    for i in range(10):
+        close = 100 + i
+        rows.append(f"2026-01-01T00:{i:02d}:00+00:00,{close-1},{close+1},{close-2},{close},100")
+    response = client.post("/api/research/historical-csv", content="\n".join(rows), headers={"content-type": "text/csv"})
+    assert response.status_code == 400
+    assert "at least 50" in response.json()["detail"]

@@ -7,6 +7,7 @@ from .advanced_analysis import analyze_market_context
 from .multifactor import analyze_factors
 from .historical_validation import validate_ohlcv_rows
 from .walk_forward import evaluate_walk_forward
+from .historical_research import analyze_historical_csv as run_historical_csv_research
 import csv
 import io
 import random
@@ -19,7 +20,7 @@ from .providers.stream_manager import MarketStreamManager
 from .providers.contracts import parse_tick
 from .providers.nse_mcp import discover_tools, call_readonly_tool
 
-app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.0.0")
+app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.1.0")
 ledger = PaperLedger(500000)
 market_provider = AuthorizedFeedAdapter()
 angel_one_provider = AngelOneMarketDataAdapter()
@@ -75,7 +76,7 @@ async def nse_public_query(payload: dict):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "6.0.0",
+    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "6.1.0",
             "mode": "EDUCATIONAL_PAPER_ONLY", "real_orders_enabled": False, "virtual_capital": 500000}
 
 @app.get("/api/providers/status")
@@ -175,7 +176,7 @@ async def market_stream(websocket: WebSocket):
 @app.get("/api/v5/integration-status")
 async def integration_status():
     return {
-        "app_version": "6.0.0",
+        "app_version": "6.1.0",
         "integration_foundation": "READY_FOR_PROVIDER_IMPLEMENTATION",
         "angel_one": await angel_one_provider.status(),
         "authorized_provider": market_provider.status(),
@@ -216,6 +217,15 @@ async def market_context(data: CandleSeries):
         return analyze_market_context(data.high, data.low, data.close, data.volume)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/research/historical-csv")
+async def historical_csv_research(csv_text: str = Body(..., media_type="text/csv")):
+    """Run structural validation, multi-factor context and walk-forward diagnostics on a supplied CSV."""
+    try:
+        return run_historical_csv_research(csv_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 
 @app.post("/api/analysis/validate-dataset")
 async def validate_historical_dataset(payload: HistoricalDataset):
