@@ -173,6 +173,10 @@ class MainActivity : ComponentActivity() {
     var historicalStatus by remember { mutableStateOf("NOT RUN") }
     var historicalAnalysisJson by remember { mutableStateOf("") }
     var historicalCandlesJson by remember { mutableStateOf("") }
+    var multiFactorJson by remember { mutableStateOf("") }
+    var walkForwardJson by remember { mutableStateOf("") }
+    var datasetValidationJson by remember { mutableStateOf("") }
+    var researchStatus by remember { mutableStateOf("NOT RUN") }
     var chartWindow by remember { mutableIntStateOf(80) }
     var requestSectionExpanded by remember { mutableStateOf(false) }
     var engineResponseExpanded by remember { mutableStateOf(false) }
@@ -180,11 +184,11 @@ class MainActivity : ComponentActivity() {
     LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item {
             PanelCard {
-                Text("EARLY MOMENTUM ENGINE",fontSize=17.sp,fontWeight=FontWeight.Bold)
+                Text("MULTI-FACTOR RESEARCH ENGINE",fontSize=17.sp,fontWeight=FontWeight.Bold)
                 Pill("PAPER RESEARCH • READ-ONLY",AMBER)
-                Text("Completed OHLCV candles aur optional market context ka analysis backend se karayein. Yeh live feed ya BUY/SELL instruction nahi hai.",color=MUTED,fontSize=12.sp)
+                Text("Completed historical OHLCV candles ka transparent multi-factor context. Yeh prediction, live feed ya BUY/SELL instruction nahi hai.",color=MUTED,fontSize=12.sp)
                 StatusRow("Backend URL",if(apiBaseUrl.isBlank()) "NOT SET" else "CONFIGURED")
-                StatusRow("Endpoint","/api/analysis/early-momentum")
+                StatusRow("Analysis","Multi-factor + historical research")
                 StatusRow("Request",requestStatus)
             }
         }
@@ -303,9 +307,37 @@ class MainActivity : ComponentActivity() {
                                 val aRaw=aStream?.bufferedReader()?.use { it.readText() }.orEmpty()
                                 if (aCode in 200..299) {
                                     analysisJson = aRaw
-                                    result="SYNTHETIC HISTORICAL SAMPLE • ${candles.length()} candles\nAnalysis HTTP $aCode\nSynthetic sample only; not exchange history."
+                                    val multiPayload = JSONObject(payload.toString())
+                                    val (multiCode, multiRaw) = postJson("$apiBaseUrl/api/analysis/multi-factor", multiPayload)
+                                    if (multiCode in 200..299) multiFactorJson = multiRaw
+                                    val datasetRows = JSONArray()
+                                    for (j in 0 until candles.length()) {
+                                        val c = candles.getJSONObject(j)
+                                        datasetRows.put(JSONObject()
+                                            .put("timestamp", c.getString("date"))
+                                            .put("open", c.getDouble("open"))
+                                            .put("high", c.getDouble("high"))
+                                            .put("low", c.getDouble("low"))
+                                            .put("close", c.getDouble("close"))
+                                            .put("volume", c.getDouble("volume")))
+                                    }
+                                    val (validationCode, validationRaw) = postJson(
+                                        "$apiBaseUrl/api/analysis/validate-dataset",
+                                        JSONObject().put("rows", datasetRows).put("interval_seconds", 300)
+                                    )
+                                    if (validationCode in 200..299) datasetValidationJson = validationRaw
+                                    val (walkCode, walkRaw) = postJson(
+                                        "$apiBaseUrl/api/research/walk-forward",
+                                        JSONObject().put("close_prices", closes).put("min_history", 30)
+                                    )
+                                    if (walkCode in 200..299) walkForwardJson = walkRaw
+                                    val allOk = multiCode in 200..299 && validationCode in 200..299 && walkCode in 200..299
+                                    researchStatus = if (allOk) "ALL RESEARCH CHECKS PASSED" else
+                                        "PARTIAL: multi=$multiCode validation=$validationCode walk=$walkCode"
+                                    result="SYNTHETIC SAMPLE • ${candles.length()} candles\\nMarket context HTTP $aCode; multi-factor HTTP $multiCode; data validation HTTP $validationCode; walk-forward HTTP $walkCode.\\nSynthetic sample only; not exchange history."
                                 } else {
-                                    result="SYNTHETIC HISTORICAL SAMPLE • ${candles.length()} candles\nAnalysis HTTP $aCode\n$aRaw"
+                                    result="SYNTHETIC HISTORICAL SAMPLE • ${candles.length()} candles\\nAnalysis HTTP $aCode\\n$aRaw"
+                                    researchStatus = "MARKET CONTEXT HTTP $aCode"
                                 }
                                 state=if(aCode in 200..299) "SYNTHETIC HISTORY ANALYSED" else "ANALYSIS HTTP $aCode"
                                 analysis.disconnect()
@@ -328,6 +360,15 @@ class MainActivity : ComponentActivity() {
                 if (historicalAnalysisJson.isNotBlank()) {
                     HistoricalIndicatorCards(historicalAnalysisJson)
                     if (historicalCandlesJson.isNotBlank()) SyntheticMarketCharts(historicalCandlesJson, historicalAnalysisJson, chartWindow, { chartWindow = it })
+                    PanelCard {
+                        Text("V6.0 MULTI-FACTOR & RESEARCH",fontSize=15.sp,fontWeight=FontWeight.Bold)
+                        Pill("HISTORICAL RESEARCH • PAPER ONLY",AMBER)
+                        StatusRow("Research pipeline",researchStatus)
+                        if (multiFactorJson.isNotBlank()) MultiFactorSummary(multiFactorJson)
+                        if (datasetValidationJson.isNotBlank()) DatasetValidationSummary(datasetValidationJson)
+                        if (walkForwardJson.isNotBlank()) WalkForwardSummary(walkForwardJson)
+                        Text("This panel uses synthetic sample candles for integration testing. Its metrics are not evidence of real-market accuracy or future performance.",color=AMBER,fontSize=11.sp)
+                    }
                 }
             }
         }
@@ -342,7 +383,7 @@ class MainActivity : ComponentActivity() {
                     value=requestJson,onValueChange={requestJson=it},
                     modifier=Modifier.fillMaxWidth().heightIn(min=220.dp),
                     label={Text("Paste completed candle JSON")},
-                    placeholder={Text("""{"symbol":"NIFTY","candles":[...]}""")},
+                    placeholder={Text("""{"high":[...],"low":[...],"close":[...],"volume":[...]}""")},
                     minLines=8,
                     colors=OutlinedTextFieldDefaults.colors(
                         focusedTextColor=Color.White,unfocusedTextColor=Color.White,
@@ -350,7 +391,7 @@ class MainActivity : ComponentActivity() {
                         focusedLabelColor=GREEN,unfocusedLabelColor=MUTED,cursorColor=GREEN
                     )
                 )
-                Text("Timezone ke saath timestamps dein. Opening window analysis ke liye 4 properly spaced completed 5-minute candles chahiye. API keys, passwords ya broker credentials kabhi paste na karein.",color=AMBER,fontSize=11.sp)
+                Text("Kam se kam 50 aligned completed OHLC candles dein. Arrays high, low, close aur optional volume hon. Synthetic data sirf integration testing ke liye hai. API keys ya credentials paste na karein.",color=AMBER,fontSize=11.sp)
                 Button(
                     onClick={
                         if(busy || apiBaseUrl.isBlank()) return@Button
@@ -365,7 +406,7 @@ class MainActivity : ComponentActivity() {
                                 var bodyText=""
                                 var state="REQUEST FAILED"
                                 try {
-                                    val connection=(URL("$apiBaseUrl/api/analysis/early-momentum").openConnection() as HttpURLConnection)
+                                    val connection=(URL("$apiBaseUrl/api/analysis/multi-factor").openConnection() as HttpURLConnection)
                                     connection.requestMethod="POST"
                                     connection.connectTimeout=15000
                                     connection.readTimeout=25000
@@ -542,6 +583,54 @@ private fun emaSeries(values: List<Double>, period: Int): List<Double> {
         result.add(previous)
     }
     return result
+}
+
+private fun postJson(url: String, payload: JSONObject): Pair<Int, String> {
+    val connection = (URL(url).openConnection() as HttpURLConnection)
+    return try {
+        connection.requestMethod = "POST"
+        connection.connectTimeout = 12000
+        connection.readTimeout = 25000
+        connection.doOutput = true
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        connection.setRequestProperty("Accept", "application/json")
+        connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        code to (stream?.bufferedReader()?.use { it.readText() }.orEmpty())
+    } finally {
+        connection.disconnect()
+    }
+}
+
+@Composable private fun MultiFactorSummary(raw: String) {
+    val obj = remember(raw) { runCatching { JSONObject(raw) }.getOrNull() }
+    if (obj == null) { Text("Multi-factor response could not be parsed.", color=RED); return }
+    Text("Factor agreement: ${obj.optString("factor_agreement","UNKNOWN")}",color=GREEN,fontWeight=FontWeight.Bold)
+    StatusRow("Context score","${obj.optInt("directional_context_score")} / -2 to +2")
+    val factors = obj.optJSONArray("factors") ?: JSONArray()
+    for (i in 0 until factors.length()) {
+        val f = factors.optJSONObject(i) ?: continue
+        StatusRow(f.optString("factor"),f.optString("state"))
+    }
+    StatusRow("Classification",obj.optString("classification"))
+}
+
+@Composable private fun DatasetValidationSummary(raw: String) {
+    val obj = remember(raw) { runCatching { JSONObject(raw) }.getOrNull() }
+    if (obj == null) { Text("Dataset validation response could not be parsed.",color=RED); return }
+    StatusRow("Dataset structure",if(obj.optBoolean("valid")) "VALID" else "INVALID")
+    StatusRow("Rows / gaps","${obj.optInt("rows")} / ${obj.optInt("gap_count")}")
+    StatusRow("Source authenticity",obj.optString("source_authenticity","NOT VERIFIED"))
+}
+
+@Composable private fun WalkForwardSummary(raw: String) {
+    val obj = remember(raw) { runCatching { JSONObject(raw) }.getOrNull() }
+    if (obj == null) { Text("Walk-forward response could not be parsed.",color=RED); return }
+    StatusRow("Out-of-sample observations",obj.optInt("out_of_sample_predictions").toString())
+    val accuracy = if (obj.isNull("directional_accuracy_pct")) "N/A" else "${obj.optDouble("directional_accuracy_pct")}%"
+    StatusRow("Historical directional accuracy",accuracy)
+    StatusRow("Evaluation coverage","${obj.optDouble("coverage_pct")}%")
 }
 
 @Composable private fun SyntheticMarketCharts(candlesJson: String, analysisJson: String, selectedWindow: Int, onWindowChange: (Int) -> Unit) {

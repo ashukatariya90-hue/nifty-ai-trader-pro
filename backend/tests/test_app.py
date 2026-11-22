@@ -154,7 +154,7 @@ def test_current_integration_status_is_explicitly_offline():
     r = client.get("/api/v5/integration-status")
     assert r.status_code == 200
     body = r.json()
-    assert body["app_version"] == "5.20.0"
+    assert body["app_version"] == "6.0.0"
     assert body["live_data_verified"] is False
     assert body["real_orders_enabled"] is False
     assert body["angel_one"]["connected"] is False
@@ -245,3 +245,31 @@ def test_simulation_historical_sample_is_synthetic_and_has_ohlcv():
 def test_simulation_historical_sample_rejects_invalid_count():
     response = client.get("/api/simulation/historical-sample?count=10")
     assert response.status_code == 400
+
+
+def test_v6_research_endpoints_accept_synthetic_integration_sample():
+    sample = client.get("/api/simulation/historical-sample?count=80")
+    assert sample.status_code == 200
+    body = sample.json()
+    assert body["data_type"] == "SYNTHETIC_NOT_HISTORICAL_MARKET_DATA"
+    candles = body["candles"]
+    payload = {
+        "high": [c["high"] for c in candles],
+        "low": [c["low"] for c in candles],
+        "close": [c["close"] for c in candles],
+        "volume": [c["volume"] for c in candles],
+    }
+    assert client.post("/api/analysis/market-context", json=payload).status_code == 200
+    multi = client.post("/api/analysis/multi-factor", json=payload)
+    assert multi.status_code == 200
+    assert multi.json()["paper_only"] is True
+    rows = [{
+        "timestamp": c["date"], "open": c["open"], "high": c["high"],
+        "low": c["low"], "close": c["close"], "volume": c["volume"]
+    } for c in candles]
+    validation = client.post("/api/analysis/validate-dataset", json={"rows": rows, "interval_seconds": 300})
+    assert validation.status_code == 200
+    assert validation.json()["valid"] is True
+    walk = client.post("/api/research/walk-forward", json={"close_prices": payload["close"], "min_history": 30})
+    assert walk.status_code == 200
+    assert walk.json()["is_trade_signal"] is False

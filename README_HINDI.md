@@ -72,3 +72,7 @@ The workflow builds a debug APK for testing; it is not a Play Store release buil
 - Read-only provider contract, timestamp/freshness validation and WebSocket fan-out.
 - Angel One and news adapters remain unconfigured placeholders.
 - No credentials, account authentication, live feed or order execution are included.
+
+
+## V6.0 Phase 3
+Android dashboard ab backend ke multi-factor analysis, historical dataset validation aur walk-forward research endpoints ko call karta hai. Synthetic sample sirf integration testing ke liye hai. App educational/paper-only hai; real orders disabled hain.

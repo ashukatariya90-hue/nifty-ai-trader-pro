@@ -4,6 +4,9 @@ from pydantic import BaseModel, Field
 from .paper import PaperLedger
 from .analysis import analyze_closes, ema_crossover_backtest
 from .advanced_analysis import analyze_market_context
+from .multifactor import analyze_factors
+from .historical_validation import validate_ohlcv_rows
+from .walk_forward import evaluate_walk_forward
 import csv
 import io
 import random
@@ -16,7 +19,7 @@ from .providers.stream_manager import MarketStreamManager
 from .providers.contracts import parse_tick
 from .providers.nse_mcp import discover_tools, call_readonly_tool
 
-app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="5.20.0")
+app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.0.0")
 ledger = PaperLedger(500000)
 market_provider = AuthorizedFeedAdapter()
 angel_one_provider = AngelOneMarketDataAdapter()
@@ -35,6 +38,14 @@ class CandleSeries(BaseModel):
 class BacktestRequest(BaseModel):
     close_prices: list[float] = Field(min_length=30, max_length=10000)
     fee_bps: float = Field(default=5.0, ge=0, le=100)
+
+class HistoricalDataset(BaseModel):
+    rows: list[dict] = Field(min_length=2, max_length=20000)
+    interval_seconds: int | None = Field(default=None, gt=0)
+
+class WalkForwardRequest(BaseModel):
+    close_prices: list[float] = Field(min_length=31, max_length=20000)
+    min_history: int = Field(default=30, ge=22, le=5000)
 
 class PaperOrder(BaseModel):
     side: str
@@ -64,7 +75,7 @@ async def nse_public_query(payload: dict):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "5.20.0",
+    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "6.0.0",
             "mode": "EDUCATIONAL_PAPER_ONLY", "real_orders_enabled": False, "virtual_capital": 500000}
 
 @app.get("/api/providers/status")
@@ -164,7 +175,7 @@ async def market_stream(websocket: WebSocket):
 @app.get("/api/v5/integration-status")
 async def integration_status():
     return {
-        "app_version": "5.20.0",
+        "app_version": "6.0.0",
         "integration_foundation": "READY_FOR_PROVIDER_IMPLEMENTATION",
         "angel_one": await angel_one_provider.status(),
         "authorized_provider": market_provider.status(),
@@ -205,6 +216,33 @@ async def market_context(data: CandleSeries):
         return analyze_market_context(data.high, data.low, data.close, data.volume)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/analysis/validate-dataset")
+async def validate_historical_dataset(payload: HistoricalDataset):
+    """Check OHLCV structure, timestamps and optional interval gaps; does not authenticate data."""
+    try:
+        return validate_ohlcv_rows(payload.rows, payload.interval_seconds)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/research/walk-forward")
+async def walk_forward_research(payload: WalkForwardRequest):
+    """Chronological next-bar classification diagnostics; no orders or trading advice."""
+    try:
+        return evaluate_walk_forward(payload.close_prices, payload.min_history)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/analysis/multi-factor")
+async def multi_factor_analysis(payload: CandleSeries):
+    """Return transparent descriptive factor agreement; never a trading signal."""
+    try:
+        return analyze_factors(payload.high, payload.low, payload.close, payload.volume)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 
 @app.post("/api/analysis/csv")
 async def analyze_historical_csv(csv_text: str = Body(..., media_type="text/csv")):
