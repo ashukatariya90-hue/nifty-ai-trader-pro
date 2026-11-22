@@ -154,7 +154,7 @@ def test_current_integration_status_is_explicitly_offline():
     r = client.get("/api/v5/integration-status")
     assert r.status_code == 200
     body = r.json()
-    assert body["app_version"] == "6.1.0"
+    assert body["app_version"] == "6.2.0"
     assert body["live_data_verified"] is False
     assert body["real_orders_enabled"] is False
     assert body["angel_one"]["connected"] is False
@@ -286,7 +286,7 @@ def test_v61_historical_csv_research_endpoint_returns_full_pipeline():
     response = client.post("/api/research/historical-csv", content="\n".join(rows), headers={"content-type": "text/csv"})
     assert response.status_code == 200
     body = response.json()
-    assert body["engine"] == "V6_1_HISTORICAL_CSV_RESEARCH"
+    assert body["engine"] == "V6_2_HISTORICAL_CSV_RESEARCH"
     assert body["dataset_validation"]["valid"] is True
     assert body["multi_factor"]["classification"] == "DESCRIPTIVE_HISTORICAL_CONTEXT_ONLY"
     assert body["walk_forward"]["is_trade_signal"] is False
@@ -300,3 +300,37 @@ def test_v61_historical_csv_endpoint_rejects_short_dataset():
     response = client.post("/api/research/historical-csv", content="\n".join(rows), headers={"content-type": "text/csv"})
     assert response.status_code == 400
     assert "at least 50" in response.json()["detail"]
+
+
+def test_historical_csv_accepts_ohlc_without_inventing_volume():
+    rows = ["Date,Open,High,Low,Close"]
+    from datetime import date, timedelta
+    start = date(2026, 8, 1)
+    for i in range(56):
+        close = 25000 + i * 3
+        rows.append(f"{(start + timedelta(days=i)).isoformat()},{close-5},{close+10},{close-10},{close}")
+    response = client.post("/api/research/historical-csv", data="\n".join(rows),
+                           headers={"content-type": "text/csv"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["rows"] == 56
+    assert body["volume_available"] is False
+    assert body["market_context"]["vwap"] is None
+    assert body["multi_factor"]["data_quality"]["volume_available"] is False
+    assert body["real_orders_enabled"] is False
+    assert body["paper_only"] is True
+
+
+def test_historical_csv_still_accepts_ohlcv_with_real_volume():
+    rows = ["Date,Open,High,Low,Close,Volume"]
+    from datetime import date, timedelta
+    start = date(2026, 8, 1)
+    for i in range(56):
+        close = 25000 + i * 3
+        rows.append(f"{(start + timedelta(days=i)).isoformat()},{close-5},{close+10},{close-10},{close},123456")
+    response = client.post("/api/research/historical-csv", data="\n".join(rows),
+                           headers={"content-type": "text/csv"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["volume_available"] is True
+    assert body["market_context"]["vwap"] is not None

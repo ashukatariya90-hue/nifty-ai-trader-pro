@@ -870,6 +870,7 @@ private data class CsvMarketData(
     val highs: List<Double> = emptyList(),
     val lows: List<Double> = emptyList(),
     val volumes: List<Double> = emptyList(),
+    val volumeAvailable: Boolean = false,
     val error: String? = null
 )
 
@@ -902,8 +903,8 @@ private fun parseMarketCsv(raw: String): CsvMarketData {
     val lowIdx = col("low")
     val closeIdx = col("close")
     val volumeIdx = col("volume")
-    if (listOf(dateIdx, openIdx, highIdx, lowIdx, closeIdx, volumeIdx).any { it < 0 }) {
-        return CsvMarketData(error = "Required columns: Date,Open,High,Low,Close,Volume.")
+    if (listOf(dateIdx, openIdx, highIdx, lowIdx, closeIdx).any { it < 0 }) {
+        return CsvMarketData(error = "Required columns: Date,Open,High,Low,Close; Volume is optional.")
     }
     val closes = mutableListOf<Double>()
     val highs = mutableListOf<Double>()
@@ -918,13 +919,15 @@ private fun parseMarketCsv(raw: String): CsvMarketData {
         val high = number(highIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid High value.")
         val low = number(lowIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Low value.")
         val close = number(closeIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Close value.")
-        val volume = number(volumeIdx) ?: return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Volume value.")
-        if (listOf(open, high, low, close).any { it <= 0 } || volume < 0) return CsvMarketData(error = "Row ${rowIndex + 2}: OHLC must be positive and volume non-negative.")
+        val volume = if (volumeIdx >= 0) number(volumeIdx) else null
+        if (volumeIdx >= 0 && (volume == null || volume < 0)) return CsvMarketData(error = "Row ${rowIndex + 2}: invalid Volume value.")
+        if (listOf(open, high, low, close).any { it <= 0 }) return CsvMarketData(error = "Row ${rowIndex + 2}: OHLC prices must be positive.")
         if (low > minOf(open, close) || high < maxOf(open, close) || low > high) return CsvMarketData(error = "Row ${rowIndex + 2}: invalid OHLC candle geometry.")
-        closes.add(close); highs.add(high); lows.add(low); volumes.add(volume)
+        closes.add(close); highs.add(high); lows.add(low)
+        if (volume != null) volumes.add(volume)
     }
-    if (closes.size < 50) return CsvMarketData(error = "At least 50 valid OHLCV rows are required for V6.1 research; found ${closes.size}.")
-    return CsvMarketData(closes, highs, lows, volumes)
+    if (closes.size < 50) return CsvMarketData(error = "At least 50 valid OHLC rows are required; found ${closes.size}.")
+    return CsvMarketData(closes, highs, lows, volumes, volumeIdx >= 0)
 }
 
 @Composable private fun Signals(
@@ -958,10 +961,10 @@ private fun parseMarketCsv(raw: String): CsvMarketData {
         item { PanelCard {
             Text("MARKET ANALYSIS LAB",fontSize=18.sp,fontWeight=FontWeight.Bold)
             Pill("EDUCATIONAL • NOT A TRADE SIGNAL",AMBER)
-            Text("Import an authorized historical OHLCV CSV. V6.1 can send it to the read-only historical research pipeline; it is not live market data.",color=MUTED,fontSize=13.sp)
+            Text("Import authorized historical NIFTY OHLC or OHLCV CSV. V6.2 supports index OHLC files without inventing volume; it is not live market data.",color=MUTED,fontSize=13.sp)
             Button(onClick=onImportCsv,modifier=Modifier.fillMaxWidth()) { Text("IMPORT HISTORICAL CSV") }
             if (csvFileName.isNotBlank()) Text("Imported: $csvFileName",color=GREEN,fontSize=12.sp)
-            Text("CSV header required: Date,Open,High,Low,Close,Volume • minimum 50 rows",color=MUTED,fontSize=11.sp)
+            Text("CSV headers: Date,Open,High,Low,Close (Volume optional) • minimum 50 rows",color=MUTED,fontSize=11.sp)
             OutlinedTextField(value=closesText,onValueChange=onCloses,label={Text("Closing prices (oldest to newest)")},modifier=Modifier.fillMaxWidth(),minLines=3)
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                 Text("Valid observations: ${closes.size}",color=MUTED,fontSize=11.sp)
@@ -981,7 +984,7 @@ private fun parseMarketCsv(raw: String): CsvMarketData {
             Watch("Bollinger middle (20)",mid?.let { "%.2f".format(it) } ?: "Insufficient data")
             Watch("Bollinger upper/lower",if(mid!=null && deviation!=null) "%.2f / %.2f".format(mid+2*deviation,mid-2*deviation) else "Insufficient data")
             Watch("20-close range low/high",if(rangeLow!=null && rangeHigh!=null) "%.2f / %.2f".format(rangeLow,rangeHigh) else "Insufficient data")
-            Watch("VWAP",vwap?.let { "%.2f".format(it) } ?: "Requires valid OHLC + volume CSV")
+            Watch("VWAP",vwap?.let { "%.2f".format(it) } ?: "Unavailable: source has no volume")
             Text("Method: SMA-seeded EMA 9/21/50 • Wilder RSI • MACD 12/26 • Bollinger 20 ±2 SD • CSV typical-price VWAP",color=MUTED,fontSize=11.sp)
             Divider(color=Color(0xFF263650))
             Text("Trend context",color=MUTED,fontSize=11.sp);Text(trend,fontWeight=FontWeight.SemiBold)

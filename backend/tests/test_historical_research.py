@@ -82,7 +82,7 @@ def csv_text(n=80, date_only=False):
 def test_v61_csv_pipeline_runs_validation_factors_and_walk_forward():
     from app.historical_research import analyze_historical_csv
     result = analyze_historical_csv(csv_text())
-    assert result["engine"] == "V6_1_HISTORICAL_CSV_RESEARCH"
+    assert result["engine"] == "V6_2_HISTORICAL_CSV_RESEARCH"
     assert result["rows"] == 80
     assert result["dataset_validation"]["valid"] is True
     assert result["multi_factor"]["observations"] == 80

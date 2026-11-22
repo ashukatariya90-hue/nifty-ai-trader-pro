@@ -84,3 +84,7 @@ Android dashboard ab backend ke multi-factor analysis, historical dataset valida
 - Date-only daily candles ko sirf ordering ke liye UTC midnight par normalize kiya jata hai; intraday time infer nahi hota. Time ke saath timestamp me timezone offset zaroori hai.
 - Dataset structure valid hone ka matlab exchange authenticity ya licence verified hona nahi hai. Missing candles fabricate nahi hote.
 - V6.1 paper-only/read-only hai; koi BUY/SELL instruction ya real order execution nahi.
+
+
+## V6.2 OHLC CSV समर्थन
+अब ऐतिहासिक CSV में Volume वैकल्पिक है। Date,Open,High,Low,Close के कम-से-कम 50 सही रिकॉर्ड स्वीकार होंगे। Volume न होने पर VWAP/volume factor उपलब्ध नहीं दिखेंगे; कोई volume डेटा बनाया नहीं जाएगा। ऐप research-only और paper-only रहेगा।
