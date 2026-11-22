@@ -1,4 +1,4 @@
-name: Build NIFTY AI TRADER PRO V6.5 APK
+name: Build NIFTY AI TRADER PRO V6.5.1 APK
 
 on:
   workflow_dispatch:
@@ -15,11 +15,11 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Extract V6.5 historical chart project ZIP
+      - name: Extract V6.5.1 chronological chart project ZIP
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_5_HISTORICAL_CHART.zip"
+          ZIP_FILE="NIFTY_AI_TRADER_PRO_V6_5_1_CHRONOLOGICAL_CHART.zip"
           if [ ! -f "$ZIP_FILE" ]; then
             echo "::error::Upload $ZIP_FILE to the repository root first."
             exit 1
@@ -101,7 +101,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NIFTY-AI-TRADER-PRO-V6-5-debug
+          name: NIFTY-AI-TRADER-PRO-V6-5-1-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
