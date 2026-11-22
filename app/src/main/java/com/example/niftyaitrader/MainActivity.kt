@@ -565,11 +565,20 @@ private fun emaSeries(values: List<Double>, period: Int): List<Double> {
     PanelCard {
         Text("SYNTHETIC CANDLESTICK CHART", fontWeight=FontWeight.Bold)
         Pill("${visibleCandles.size} GENERATED TEST CANDLES • NOT EXCHANGE DATA", AMBER)
+        Text("VISIBLE CANDLE WINDOW", color=MUTED, fontSize=10.sp, fontWeight=FontWeight.Bold)
         Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             listOf(20, 40, 80).forEach { count ->
-                FilterChip(selected=selectedWindow==count, onClick={onWindowChange(count)}, label={Text("$count candles")})
+                FilterChip(
+                    selected = selectedWindow == count,
+                    onClick = { onWindowChange(count) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text(count.toString(), maxLines = 1, fontSize = 14.sp) }
+                )
             }
         }
+        Text("${
+            visibleCandles.size
+        } of ${candles.size} synthetic candles displayed", color=MUTED, fontSize=10.sp)
         Text("OHLC candles with calculated EMA overlays. The chart is for UI and indicator education only.", color=MUTED, fontSize=11.sp)
         Text("PRICE + EMA OVERLAYS", color=MUTED, fontSize=10.sp, fontWeight=FontWeight.Bold)
         Canvas(Modifier.fillMaxWidth().height(290.dp)) {
