@@ -173,6 +173,9 @@ class MainActivity : ComponentActivity() {
     var historicalStatus by remember { mutableStateOf("NOT RUN") }
     var historicalAnalysisJson by remember { mutableStateOf("") }
     var historicalCandlesJson by remember { mutableStateOf("") }
+    var chartWindow by remember { mutableIntStateOf(80) }
+    var requestSectionExpanded by remember { mutableStateOf(false) }
+    var engineResponseExpanded by remember { mutableStateOf(false) }
 
     LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item {
@@ -324,13 +327,17 @@ class MainActivity : ComponentActivity() {
                 Text(historicalResult,color=if(historicalStatus=="SYNTHETIC HISTORY ANALYSED") GREEN else MUTED,fontSize=12.sp)
                 if (historicalAnalysisJson.isNotBlank()) {
                     HistoricalIndicatorCards(historicalAnalysisJson)
-                    if (historicalCandlesJson.isNotBlank()) SyntheticMarketCharts(historicalCandlesJson, historicalAnalysisJson)
+                    if (historicalCandlesJson.isNotBlank()) SyntheticMarketCharts(historicalCandlesJson, historicalAnalysisJson, chartWindow, { chartWindow = it })
                 }
             }
         }
         item {
             PanelCard {
-                Text("REQUEST JSON",fontWeight=FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically) {
+                    Text("REQUEST JSON",fontWeight=FontWeight.Bold)
+                    TextButton(onClick={ requestSectionExpanded = !requestSectionExpanded }) { Text(if(requestSectionExpanded) "HIDE ▲" else "SHOW ▼", color=GREEN) }
+                }
+                if (requestSectionExpanded) {
                 OutlinedTextField(
                     value=requestJson,onValueChange={requestJson=it},
                     modifier=Modifier.fillMaxWidth().heightIn(min=220.dp),
@@ -390,12 +397,16 @@ class MainActivity : ComponentActivity() {
                     onClick={requestJson="";responseText="Analysis request abhi nahi bheji gayi.";requestStatus="READY"},
                     enabled=!busy,modifier=Modifier.fillMaxWidth()
                 ) { Text("CLEAR") }
+                }
             }
         }
         item {
             PanelCard {
-                Text("ENGINE RESPONSE",fontWeight=FontWeight.Bold)
-                Text(responseText,color=MUTED,fontSize=11.sp)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically) {
+                    Text("ENGINE RESPONSE",fontWeight=FontWeight.Bold)
+                    TextButton(onClick={ engineResponseExpanded = !engineResponseExpanded }) { Text(if(engineResponseExpanded) "HIDE ▲" else "SHOW ▼", color=GREEN) }
+                }
+                if (engineResponseExpanded) Text(responseText,color=MUTED,fontSize=11.sp)
             }
         }
         item {
@@ -533,7 +544,7 @@ private fun emaSeries(values: List<Double>, period: Int): List<Double> {
     return result
 }
 
-@Composable private fun SyntheticMarketCharts(candlesJson: String, analysisJson: String) {
+@Composable private fun SyntheticMarketCharts(candlesJson: String, analysisJson: String, selectedWindow: Int, onWindowChange: (Int) -> Unit) {
     val candles = remember(candlesJson) {
         runCatching {
             val array = JSONArray(candlesJson)
@@ -547,29 +558,39 @@ private fun emaSeries(values: List<Double>, period: Int): List<Double> {
     val analysis = remember(analysisJson) { runCatching { JSONObject(analysisJson) }.getOrNull() }
     if (candles.isEmpty()) return
     val closes = candles.map { it.close }
-    val ema9 = remember(candlesJson) { emaSeries(closes, 9) }
-    val ema21 = remember(candlesJson) { emaSeries(closes, 21) }
-    val ema50 = remember(candlesJson) { emaSeries(closes, 50) }
+    val visibleCandles = candles.takeLast(selectedWindow.coerceAtMost(candles.size))
+    val ema9 = remember(candlesJson) { emaSeries(closes, 9) }.takeLast(visibleCandles.size)
+    val ema21 = remember(candlesJson) { emaSeries(closes, 21) }.takeLast(visibleCandles.size)
+    val ema50 = remember(candlesJson) { emaSeries(closes, 50) }.takeLast(visibleCandles.size)
     PanelCard {
         Text("SYNTHETIC CANDLESTICK CHART", fontWeight=FontWeight.Bold)
-        Pill("80 GENERATED TEST CANDLES • NOT EXCHANGE DATA", AMBER)
+        Pill("${visibleCandles.size} GENERATED TEST CANDLES • NOT EXCHANGE DATA", AMBER)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            listOf(20, 40, 80).forEach { count ->
+                FilterChip(selected=selectedWindow==count, onClick={onWindowChange(count)}, label={Text("$count candles")})
+            }
+        }
         Text("OHLC candles with calculated EMA overlays. The chart is for UI and indicator education only.", color=MUTED, fontSize=11.sp)
-        Canvas(Modifier.fillMaxWidth().height(230.dp)) {
+        Text("PRICE + EMA OVERLAYS", color=MUTED, fontSize=10.sp, fontWeight=FontWeight.Bold)
+        Canvas(Modifier.fillMaxWidth().height(290.dp)) {
             val left = 8f; val right = size.width - 8f
-            val top = 12f; val chartBottom = size.height - 34f
-            val volumeTop = size.height - 27f
-            val maxPrice = candles.maxOf { it.high }
-            val minPrice = candles.minOf { it.low }
+            val top = 12f
+            val priceBottom = size.height * 0.70f
+            val volumeTop = priceBottom + 12f
+            val volumeBottom = size.height - 8f
+            val maxPrice = visibleCandles.maxOf { it.high }
+            val minPrice = visibleCandles.minOf { it.low }
             val range = (maxPrice - minPrice).takeIf { it > 0.0 } ?: 1.0
-            val maxVol = candles.maxOf { it.volume }.coerceAtLeast(1.0)
-            val step = (right-left) / candles.size
-            fun y(price: Double) = chartBottom - (((price-minPrice)/range).toFloat() * (chartBottom-top))
+            val maxVol = visibleCandles.maxOf { it.volume }.coerceAtLeast(1.0)
+            val step = (right-left) / visibleCandles.size
+            fun y(price: Double) = priceBottom - (((price-minPrice)/range).toFloat() * (priceBottom-top))
             // subtle price grid
             for (i in 0..3) {
-                val gy = top + (chartBottom-top) * i / 3f
+                val gy = top + (priceBottom-top) * i / 3f
                 drawLine(MUTED.copy(alpha=0.18f), Offset(left,gy), Offset(right,gy), 1f)
             }
-            candles.forEachIndexed { i, c ->
+            drawLine(MUTED.copy(alpha=0.35f), Offset(left,volumeTop-4f), Offset(right,volumeTop-4f), 1f)
+            visibleCandles.forEachIndexed { i, c ->
                 val x = left + step * (i + 0.5f)
                 val up = c.close >= c.open
                 val candleColor = if (up) GREEN else RED
@@ -578,9 +599,10 @@ private fun emaSeries(values: List<Double>, period: Int): List<Double> {
                 val bodyBottom = maxOf(y(c.open),y(c.close))
                 drawRect(candleColor, topLeft=Offset(x-step*0.28f,bodyTop),
                     size=androidx.compose.ui.geometry.Size(step*0.56f,(bodyBottom-bodyTop).coerceAtLeast(2f)))
-                val vh = ((c.volume/maxVol).toFloat()*18f)
-                drawRect(MUTED.copy(alpha=0.42f), topLeft=Offset(x-step*0.22f,volumeTop-vh),
-                    size=androidx.compose.ui.geometry.Size(step*0.44f,vh))
+                val volumeHeight = (volumeBottom-volumeTop).coerceAtLeast(1f)
+                val vh = ((c.volume/maxVol).toFloat()*volumeHeight)
+                drawRect(if(up) GREEN.copy(alpha=0.62f) else RED.copy(alpha=0.62f), topLeft=Offset(x-step*0.30f,volumeBottom-vh),
+                    size=androidx.compose.ui.geometry.Size(step*0.60f,vh))
             }
             fun drawEma(series: List<Double>, color: Color) {
                 for (i in 1 until series.size) {
@@ -590,11 +612,11 @@ private fun emaSeries(values: List<Double>, period: Int): List<Double> {
             }
             drawEma(ema9, AMBER); drawEma(ema21, Color(0xFF7CB7FF)); drawEma(ema50, Color(0xFFC39BFF))
         }
+        Text("VOLUME • bars scaled within selected window", color=MUTED, fontSize=10.sp)
         Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             Text("● EMA 9", color=AMBER, fontSize=10.sp)
             Text("● EMA 21", color=Color(0xFF7CB7FF), fontSize=10.sp)
             Text("● EMA 50", color=Color(0xFFC39BFF), fontSize=10.sp)
-            Text("■ Volume", color=MUTED, fontSize=10.sp)
         }
         Divider(color=MUTED.copy(alpha=0.25f))
         Text("RSI 14 • ${analysis?.optString("rsi_14","—") ?: "—"}", fontWeight=FontWeight.SemiBold)
