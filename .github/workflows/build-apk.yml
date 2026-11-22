@@ -45,7 +45,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No extracted source changes to commit."
           else
-            git commit -m "Sync NIFTY AI TRADER PRO V6.4 historical replay integration [skip ci]"
+            git commit -m "Sync NIFTY AI TRADER PRO V6.5.1 backend version alignment [skip ci]"
             git push origin HEAD:main
           fi
 
