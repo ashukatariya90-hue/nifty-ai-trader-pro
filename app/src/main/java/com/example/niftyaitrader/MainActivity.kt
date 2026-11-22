@@ -30,6 +30,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.util.TimeZone
 import java.util.Locale
 import java.net.HttpURLConnection
 import java.net.URL
@@ -783,6 +785,20 @@ private fun postJson(url: String, payload: JSONObject): Pair<Int, String> {
     StatusRow("Evaluation coverage","${obj.optDouble("coverage_pct")}%")
 }
 
+private fun historicalDateSortKey(raw: String): Long {
+    val patterns = listOf("yyyy-MM-dd", "dd MMM yyyy", "dd-MMM-yyyy", "dd-MM-yyyy", "dd/MM/yyyy")
+    for (pattern in patterns) {
+        val parser = SimpleDateFormat(pattern, Locale.ENGLISH).apply {
+            isLenient = false
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val parsed = runCatching { parser.parse(raw.trim()) }.getOrNull()
+        if (parsed != null) return parsed.time
+    }
+    // Keep unrecognized dates after valid dates; supported NSE formats are parsed above.
+    return Long.MAX_VALUE
+}
+
 private data class HistoricalBar(val date: String, val open: Double, val high: Double, val low: Double, val close: Double)
 
 @Composable private fun HistoricalOhlcChart(csvText: String) {
@@ -813,7 +829,7 @@ private data class HistoricalBar(val date: String, val open: Double, val high: D
                         if (o==null || h==null || l==null || c==null || l>minOf(o,c) || h<maxOf(o,c)) null
                         else HistoricalBar(p[di],o,h,l,c)
                     }
-                }.takeLast(120)
+                }.sortedBy { historicalDateSortKey(it.date) }.takeLast(120)
             }
         }.getOrDefault(emptyList())
     }
