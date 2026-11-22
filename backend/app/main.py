@@ -22,7 +22,7 @@ from .providers.stream_manager import MarketStreamManager
 from .providers.contracts import parse_tick
 from .providers.nse_mcp import discover_tools, call_readonly_tool
 
-app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.7.0")
+app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.8.0")
 ledger = PaperLedger(500000)
 market_provider = AuthorizedFeedAdapter()
 angel_one_provider = AngelOneMarketDataAdapter()
@@ -55,6 +55,8 @@ class PaperOrder(BaseModel):
     side: str
     quantity: int = Field(gt=0, le=100000)
     reference_price: float = Field(gt=0)
+    symbol: str = Field(default="NIFTY", min_length=1, max_length=40)
+    client_order_id: str | None = Field(default=None, max_length=80)
 
 
 @app.get("/api/nse/status")
@@ -192,7 +194,7 @@ async def v6_stream_health():
     snapshot = stream_manager.latest_snapshot()
     event_states = {symbol: event["freshness"] for symbol, event in snapshot["events"].items()}
     return {
-        "app_version": "6.7.0",
+        "app_version": "6.8.0",
         "stream_status": snapshot["status"],
         "connected_clients": status["connected_clients"],
         "symbols_cached": status["symbols_cached"],
@@ -211,7 +213,7 @@ async def v6_stream_health():
 async def v6_diagnostics():
     """Operational diagnostics for the read-only stream; no credentials or orders."""
     return {
-        "app_version": "6.7.0",
+        "app_version": "6.8.0",
         "mode": "EDUCATIONAL_PAPER_ONLY",
         "stream": stream_manager.status(),
         "provider_connections": {
@@ -227,7 +229,7 @@ async def v6_diagnostics():
 @app.get("/api/v5/integration-status")
 async def integration_status():
     return {
-        "app_version": "6.7.0",
+        "app_version": "6.8.0",
         "integration_foundation": "READY_FOR_PROVIDER_IMPLEMENTATION",
         "angel_one": await angel_one_provider.status(),
         "authorized_provider": market_provider.status(),
@@ -448,6 +450,33 @@ async def backtest(data: BacktestRequest):
 @app.get("/api/paper/ledger")
 async def get_ledger():
     return ledger.snapshot()
+
+@app.post("/api/paper/orders")
+async def submit_paper_order(order: PaperOrder):
+    """Create a pending paper order; this endpoint never contacts a broker."""
+    try:
+        return ledger.submit(order.side, order.quantity, order.reference_price,
+                             order.symbol, order.client_order_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/paper/orders/{order_id}/fill")
+async def fill_paper_order(order_id: str, payload: dict = Body(default={})):
+    try:
+        return ledger.fill(order_id, payload.get("fill_price"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/paper/orders/{order_id}/cancel")
+async def cancel_paper_order(order_id: str):
+    try:
+        return ledger.cancel(order_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/api/paper/order")
 async def paper_order(order: PaperOrder):

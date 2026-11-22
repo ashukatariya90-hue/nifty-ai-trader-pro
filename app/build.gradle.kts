@@ -10,8 +10,8 @@ android {
         applicationId = "com.example.niftyaitrader"
         minSdk = 24
         targetSdk = 35
-        versionCode = 68
-        versionName = "6.7.0"
+        versionCode = 67
+        versionName = "6.8.0"
         val backendUrl = ((project.findProperty("API_BASE_URL") as String?)?.takeIf { it.isNotBlank() }
             ?: "https://nifty-ai-trader-pro.onrender.com")
         buildConfigField("String", "API_BASE_URL", "\"${backendUrl.trimEnd('/')}\"")
