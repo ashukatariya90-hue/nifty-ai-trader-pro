@@ -154,7 +154,7 @@ def test_current_integration_status_is_explicitly_offline():
     r = client.get("/api/v5/integration-status")
     assert r.status_code == 200
     body = r.json()
-    assert body["app_version"] == "6.3.0"
+    assert body["app_version"] == "6.4.0"
     assert body["live_data_verified"] is False
     assert body["real_orders_enabled"] is False
     assert body["angel_one"]["connected"] is False
@@ -360,3 +360,49 @@ NIFTY 50,19 Nov 2026,25186.80,25514.30,25104.80,25514.30
     assert result["last_timestamp"].startswith("2026-09-25")
     assert result["market_context"]["vwap"] is None
     assert result["real_orders_enabled"] is False
+
+
+def _replay_csv(rows=50):
+    from datetime import datetime, timedelta, timezone
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    lines = ["Date,Open,High,Low,Close"]
+    for i in range(rows):
+        close = 25000 + i
+        stamp = (start + timedelta(minutes=5*i)).isoformat()
+        lines.append(f"{stamp},{close-1},{close+2},{close-2},{close}")
+    return "\n".join(lines)
+
+
+def test_historical_replay_endpoint_starts_and_labels_replay():
+    response = client.post("/api/replay/historical-csv?interval_ms=50",
+        content=_replay_csv(), headers={"content-type": "text/csv"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "RUNNING"
+    assert body["total"] == 50
+    assert body["classification"] == "HISTORICAL_REPLAY_NOT_LIVE"
+    assert body["real_orders_enabled"] is False
+    status = client.get(f"/api/replay/{body['replay_id']}")
+    assert status.status_code == 200
+    assert status.json()["source"] == "USER_SUPPLIED_HISTORICAL_CSV"
+
+
+def test_historical_replay_rejects_too_fast_interval():
+    response = client.post("/api/replay/historical-csv?interval_ms=1",
+        content=_replay_csv(), headers={"content-type": "text/csv"})
+    assert response.status_code == 400
+
+
+def test_historical_replay_publishes_explicitly_delayed_stream_events():
+    import time
+    response = client.post("/api/replay/historical-csv?interval_ms=50",
+        content=_replay_csv(), headers={"content-type": "text/csv"})
+    assert response.status_code == 200
+    time.sleep(0.12)
+    snapshot = client.get("/api/market/latest?symbol=NIFTY").json()
+    event = snapshot["events"].get("NIFTY")
+    assert event is not None
+    assert event["source"] == "HISTORICAL_CSV_REPLAY"
+    assert event["freshness"] == "DELAYED"
+    assert event["read_only"] is True
+    assert snapshot["real_orders_enabled"] is False

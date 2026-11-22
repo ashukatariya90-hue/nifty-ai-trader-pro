@@ -132,6 +132,8 @@ def analyze_historical_csv(csv_text: str) -> dict[str, Any]:
         "input_order_normalized": "NEWEST_FIRST_OR_MIXED_INPUT_SORTED_CHRONOLOGICALLY",
         "first_timestamp": rows[0]["timestamp"], "last_timestamp": rows[-1]["timestamp"],
         "date_only_rows_normalized_to_utc_midnight": date_only_count,
+        # Explicitly exposed for controlled historical replay; never represented as live data.
+        "replay_candles": rows,
         "dataset_validation": validation, "market_context": context,
         "multi_factor": factors, "walk_forward": walk,
         "limitations": [

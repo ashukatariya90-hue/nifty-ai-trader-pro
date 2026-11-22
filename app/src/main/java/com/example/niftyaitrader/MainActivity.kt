@@ -183,6 +183,10 @@ class MainActivity : ComponentActivity() {
     var csvResearchBusy by remember { mutableStateOf(false) }
     var csvResearchStatus by remember { mutableStateOf("NO CSV RESEARCH RUN") }
     var csvResearchResult by remember { mutableStateOf("") }
+    var replayBusy by remember { mutableStateOf(false) }
+    var replayId by remember { mutableStateOf("") }
+    var replayStatus by remember { mutableStateOf("NOT STARTED") }
+    var replayResult by remember { mutableStateOf("No historical replay started.") }
 
     LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item {
@@ -260,6 +264,75 @@ Full response: $raw"""
                     enabled = !csvResearchBusy && apiBaseUrl.isNotBlank() && importedCsv.isNotBlank(),
                     modifier = Modifier.fillMaxWidth()
                 ) { Text(if(csvResearchBusy) "RESEARCH RUNNING…" else "ANALYSE IMPORTED HISTORICAL CSV") }
+                Button(
+                    onClick={
+                        if(replayBusy || apiBaseUrl.isBlank() || importedCsv.isBlank()) return@Button
+                        replayBusy=true
+                        replayStatus="STARTING"
+                        Thread {
+                            var result="Historical replay request failed."
+                            var state="REQUEST FAILED"
+                            var newId=""
+                            try {
+                                val connection=(URL("$apiBaseUrl/api/replay/historical-csv?interval_ms=250").openConnection() as HttpURLConnection)
+                                connection.requestMethod="POST"
+                                connection.connectTimeout=15000
+                                connection.readTimeout=45000
+                                connection.doOutput=true
+                                connection.setRequestProperty("Content-Type","text/csv; charset=utf-8")
+                                connection.setRequestProperty("Accept","application/json")
+                                connection.outputStream.use { it.write(importedCsv.toByteArray(Charsets.UTF_8)) }
+                                val code=connection.responseCode
+                                val stream=if(code in 200..299) connection.inputStream else connection.errorStream
+                                val raw=stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                                if(code in 200..299) {
+                                    val root=JSONObject(raw)
+                                    newId=root.optString("replay_id")
+                                    result="Historical replay started.\nRows: ${root.optInt("total")}\nClassification: ${root.optString("classification")}\nReplay ID: $newId\nEvents are labelled HISTORICAL_CSV_REPLAY and DELAYED; they are not live prices."
+                                    state="RUNNING • HISTORICAL ONLY"
+                                } else {
+                                    result="HTTP $code\n$raw"
+                                    state="HTTP $code"
+                                }
+                                connection.disconnect()
+                            } catch(e:Exception) { result=e.message ?: "Network error" }
+                            Handler(Looper.getMainLooper()).post {
+                                replayId=newId
+                                replayResult=result
+                                replayStatus=state
+                                replayBusy=false
+                            }
+                        }.start()
+                    },
+                    enabled=!replayBusy && apiBaseUrl.isNotBlank() && importedCsv.isNotBlank(),
+                    modifier=Modifier.fillMaxWidth()
+                ) { Text(if(replayBusy) "STARTING REPLAY…" else "START HISTORICAL CSV REPLAY") }
+                StatusRow("Replay status",replayStatus)
+                if(replayResult.isNotBlank()) Text(replayResult,color=if(replayStatus.startsWith("RUNNING")) AMBER else MUTED,fontSize=11.sp)
+                if(replayId.isNotBlank()) Button(
+                    onClick={
+                        Thread {
+                            var result="Replay status unavailable."
+                            var state="REQUEST FAILED"
+                            try {
+                                val connection=(URL("$apiBaseUrl/api/replay/$replayId").openConnection() as HttpURLConnection)
+                                connection.requestMethod="GET"
+                                connection.connectTimeout=10000
+                                connection.readTimeout=10000
+                                val code=connection.responseCode
+                                val stream=if(code in 200..299) connection.inputStream else connection.errorStream
+                                val raw=stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                                if(code in 200..299) {
+                                    val root=JSONObject(raw)
+                                    state=root.optString("status","UNKNOWN")
+                                    result="Status: $state\nPublished: ${root.optInt("published")}/${root.optInt("total")}\nSource: ${root.optString("source")}\nHistorical replay only; not live data."
+                                } else result="HTTP $code\n$raw"
+                                connection.disconnect()
+                            } catch(e:Exception) { result=e.message ?: "Network error" }
+                            Handler(Looper.getMainLooper()).post { replayStatus=state; replayResult=result }
+                        }.start()
+                    }, modifier=Modifier.fillMaxWidth()
+                ) { Text("REFRESH REPLAY STATUS") }
                 if(csvResearchResult.isNotBlank()) Text(csvResearchResult,color=if(csvResearchStatus.startsWith("RESEARCH COMPLETE")) GREEN else MUTED,fontSize=11.sp)
                 Text("Minimum 50 valid OHLCV rows. Date-only daily rows are normalized to UTC midnight for ordering; timezone-naive intraday timestamps are rejected. No missing bars are invented.",color=AMBER,fontSize=11.sp)
             }

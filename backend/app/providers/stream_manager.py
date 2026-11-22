@@ -41,6 +41,14 @@ class MarketStreamManager:
                 await self.disconnect(ws)
         return True
 
+    async def clear(self, symbol=None):
+        """Clear cached events before starting a distinct replay session."""
+        async with self._lock:
+            if symbol is None:
+                self.latest.clear()
+            else:
+                self.latest.pop(symbol.upper(), None)
+
     def latest_snapshot(self, symbol=None):
         now = datetime.now(timezone.utc)
         selected = ({symbol.upper(): self.latest[symbol.upper()]}

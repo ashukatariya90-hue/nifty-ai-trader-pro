@@ -11,6 +11,8 @@ from .historical_research import analyze_historical_csv as run_historical_csv_re
 import csv
 import io
 import random
+import asyncio
+import uuid
 from datetime import timedelta, timezone
 from datetime import datetime
 from .providers.authorized_feed import AuthorizedFeedAdapter
@@ -20,12 +22,13 @@ from .providers.stream_manager import MarketStreamManager
 from .providers.contracts import parse_tick
 from .providers.nse_mcp import discover_tools, call_readonly_tool
 
-app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.3.0")
+app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.4.0")
 ledger = PaperLedger(500000)
 market_provider = AuthorizedFeedAdapter()
 angel_one_provider = AngelOneMarketDataAdapter()
 news_provider = NewsSentimentProvider()
 stream_manager = MarketStreamManager()
+historical_replays: dict[str, dict] = {}
 
 class CloseSeries(BaseModel):
     close_prices: list[float] = Field(min_length=1, max_length=10000)
@@ -76,7 +79,7 @@ async def nse_public_query(payload: dict):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "6.3.0",
+    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "6.4.0",
             "mode": "EDUCATIONAL_PAPER_ONLY", "real_orders_enabled": False, "virtual_capital": 500000}
 
 @app.get("/api/providers/status")
@@ -176,7 +179,7 @@ async def market_stream(websocket: WebSocket):
 @app.get("/api/v5/integration-status")
 async def integration_status():
     return {
-        "app_version": "6.3.0",
+        "app_version": "6.4.0",
         "integration_foundation": "READY_FOR_PROVIDER_IMPLEMENTATION",
         "angel_one": await angel_one_provider.status(),
         "authorized_provider": market_provider.status(),
@@ -226,6 +229,86 @@ async def historical_csv_research(csv_text: str = Body(..., media_type="text/csv
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+
+@app.post("/api/replay/historical-csv")
+async def start_historical_replay(
+    csv_text: str = Body(..., media_type="text/csv"),
+    interval_ms: int = 250,
+):
+    """Start a labelled, read-only replay of user-supplied historical NSE OHLC data."""
+    if interval_ms < 50 or interval_ms > 5000:
+        raise HTTPException(status_code=400, detail="interval_ms must be between 50 and 5000")
+    try:
+        research = run_historical_csv_research(csv_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # A replay is a separate session; remove a newer synthetic/test event first.
+    for task_id, state in list(historical_replays.items()):
+        if state.get("status") == "RUNNING":
+            state["status"] = "CANCELLED"
+            task = state.get("task")
+            if task and not task.done():
+                task.cancel()
+    await stream_manager.clear("NIFTY")
+    replay_id = str(uuid.uuid4())
+    candles = research["replay_candles"]
+    historical_replays[replay_id] = {
+        "status": "RUNNING", "total": len(candles), "published": 0,
+        "source": "USER_SUPPLIED_HISTORICAL_CSV", "classification": "HISTORICAL_REPLAY_NOT_LIVE",
+        "started_at": datetime.now(timezone.utc).isoformat(), "task": None,
+    }
+
+    async def run_replay():
+        state = historical_replays[replay_id]
+        try:
+            for candle in candles:
+                tick = parse_tick({
+                    "symbol": "NIFTY", "last_price": candle["close"],
+                    "exchange_timestamp": candle["timestamp"], "delayed": True,
+                }, source="HISTORICAL_CSV_REPLAY")
+                accepted = await stream_manager.publish(tick)
+                if accepted:
+                    state["published"] += 1
+                await asyncio.sleep(interval_ms / 1000)
+            state["status"] = "COMPLETED"
+            state["completed_at"] = datetime.now(timezone.utc).isoformat()
+        except asyncio.CancelledError:
+            state["status"] = "CANCELLED"
+            raise
+        except Exception as exc:
+            state["status"] = "FAILED"
+            state["error"] = str(exc)[:200]
+
+    task = asyncio.create_task(run_replay())
+    historical_replays[replay_id]["task"] = task
+    return {
+        "replay_id": replay_id, "status": "RUNNING", "total": len(candles),
+        "published": 0, "source": "USER_SUPPLIED_HISTORICAL_CSV",
+        "classification": "HISTORICAL_REPLAY_NOT_LIVE", "interval_ms": interval_ms,
+        "real_orders_enabled": False, "paper_only": True,
+        "note": "Replay preserves supplied timestamps. All events are labelled historical and delayed.",
+    }
+
+@app.get("/api/replay/{replay_id}")
+async def historical_replay_status(replay_id: str):
+    state = historical_replays.get(replay_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Replay session not found")
+    return {key: value for key, value in state.items() if key != "task"} | {
+        "real_orders_enabled": False, "paper_only": True,
+    }
+
+@app.post("/api/replay/{replay_id}/stop")
+async def stop_historical_replay(replay_id: str):
+    state = historical_replays.get(replay_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Replay session not found")
+    task = state.get("task")
+    if task and not task.done():
+        task.cancel()
+    state["status"] = "CANCELLED"
+    return {"replay_id": replay_id, "status": "CANCELLED", "real_orders_enabled": False}
 
 @app.post("/api/analysis/validate-dataset")
 async def validate_historical_dataset(payload: HistoricalDataset):
