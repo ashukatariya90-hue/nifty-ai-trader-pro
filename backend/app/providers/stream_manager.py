@@ -14,15 +14,19 @@ class MarketStreamManager:
             "broadcast_failures": 0,
         }
         self._last_event = None
+        self._metrics["heartbeat_messages_sent"] = 0
+        self._client_connected_at = {}
 
     async def connect(self, websocket):
         await websocket.accept()
         async with self._lock:
             self.clients.add(websocket)
+            self._client_connected_at[websocket] = datetime.now(timezone.utc)
 
     async def disconnect(self, websocket):
         async with self._lock:
             self.clients.discard(websocket)
+            self._client_connected_at.pop(websocket, None)
 
     async def publish(self, tick):
         """Cache and broadcast only newer events; return False for stale ordering."""
@@ -57,6 +61,7 @@ class MarketStreamManager:
                 async with self._lock:
                     self._metrics["broadcast_failures"] += 1
                     self.clients.discard(ws)
+                    self._client_connected_at.pop(ws, None)
         return True
 
     async def clear(self, symbol=None):
@@ -79,6 +84,8 @@ class MarketStreamManager:
                         }
                     else:
                         self._last_event = None
+        self._metrics["heartbeat_messages_sent"] = 0
+        self._client_connected_at = {}
 
     def latest_snapshot(self, symbol=None):
         now = datetime.now(timezone.utc)
@@ -115,6 +122,11 @@ class MarketStreamManager:
         return {
             "connected_clients": len(self.clients),
             "symbols_cached": len(self.latest),
+            "heartbeat_interval_seconds": 20,
+            "oldest_client_connection_age_seconds": (
+                round(min((now - stamp).total_seconds() for stamp in self._client_connected_at.values()), 3)
+                if self._client_connected_at else None
+            ),
             "metrics": dict(self._metrics),
             "last_event": dict(self._last_event) if self._last_event else None,
             "latest_event_age_seconds": latest_age,

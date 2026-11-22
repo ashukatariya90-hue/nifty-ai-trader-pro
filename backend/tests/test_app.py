@@ -154,7 +154,7 @@ def test_current_integration_status_is_explicitly_offline():
     r = client.get("/api/v5/integration-status")
     assert r.status_code == 200
     body = r.json()
-    assert body["app_version"] == "6.6.0"
+    assert body["app_version"] == "6.7.0"
     assert body["live_data_verified"] is False
     assert body["real_orders_enabled"] is False
     assert body["angel_one"]["connected"] is False
@@ -412,7 +412,7 @@ def test_v66_diagnostics_reports_read_only_stream_metrics():
     response = client.get("/api/v6/diagnostics")
     assert response.status_code == 200
     body = response.json()
-    assert body["app_version"] == "6.6.0"
+    assert body["app_version"] == "6.7.0"
     assert body["mode"] == "EDUCATIONAL_PAPER_ONLY"
     assert body["real_orders_enabled"] is False
     assert body["live_data_verified"] is False
@@ -439,3 +439,24 @@ def test_stream_diagnostics_count_accepted_and_out_of_order_events():
     assert status["metrics"]["rejected_out_of_order_events"] == 1
     assert status["last_event"]["source"] == "TEST"
     assert status["real_orders_enabled"] is False
+
+
+
+def test_v67_stream_health_is_read_only_and_explicit_about_provider_state():
+    response = client.get("/api/v6/stream-health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["app_version"] == "6.7.0"
+    assert body["stream_status"] in {"OFFLINE_NO_EVENTS", "AVAILABLE"}
+    assert body["provider_connected"] is False
+    assert body["live_data_verified"] is False
+    assert body["read_only"] is True
+    assert body["real_orders_enabled"] is False
+    assert body["heartbeat_interval_seconds"] == 20
+
+
+def test_v67_diagnostics_exposes_heartbeat_metric():
+    body = client.get("/api/v6/diagnostics").json()
+    assert body["app_version"] == "6.7.0"
+    assert "heartbeat_messages_sent" in body["stream"]["metrics"]
+    assert body["real_orders_enabled"] is False
