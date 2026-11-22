@@ -1,11 +1,16 @@
 from datetime import datetime, timezone
 from uuid import uuid4
+import json
+import os
+import sqlite3
+from pathlib import Path
 
 
 class PaperLedger:
-    """In-memory educational ledger. It never connects to a broker or routes orders."""
+    """Educational paper ledger with optional SQLite persistence; never routes broker orders."""
 
-    def __init__(self, initial_balance=500000, fee_bps=10, max_order_notional_fraction=0.20):
+    def __init__(self, initial_balance=500000, fee_bps=10, max_order_notional_fraction=0.20,
+                 db_path=None):
         if initial_balance <= 0:
             raise ValueError("initial_balance must be positive")
         if fee_bps < 0 or fee_bps > 1000:
@@ -21,6 +26,56 @@ class PaperLedger:
         self.fills = []
         self.realized_pnl = 0.0
         self._client_order_ids = {}
+        configured_path = db_path if db_path is not None else os.getenv("PAPER_LEDGER_DB_PATH", ":memory:")
+        self.db_path = str(configured_path)
+        self._db = None
+        if self.db_path != ":memory:":
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._db = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS paper_ledger_state (id INTEGER PRIMARY KEY CHECK (id=1), payload TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        self._db.commit()
+        self._load_state()
+
+    def _state_payload(self):
+        return {
+            "initial_balance": self.initial_balance,
+            "fee_bps": self.fee_bps,
+            "max_order_notional": self.max_order_notional,
+            "cash": self.cash,
+            "orders": self.orders,
+            "positions": self.positions,
+            "fills": self.fills,
+            "realized_pnl": self.realized_pnl,
+            "client_order_ids": self._client_order_ids,
+        }
+
+    def _persist(self):
+        payload = json.dumps(self._state_payload(), separators=(",", ":"), allow_nan=False)
+        self._db.execute(
+            "INSERT INTO paper_ledger_state (id, payload, updated_at) VALUES (1, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at",
+            (payload, self._now()),
+        )
+        self._db.commit()
+
+    def _load_state(self):
+        row = self._db.execute("SELECT payload FROM paper_ledger_state WHERE id=1").fetchone()
+        if not row:
+            self._persist()
+            return
+        state = json.loads(row[0])
+        # The configured initial balance and fee policy must match the stored ledger.
+        if float(state["initial_balance"]) != self.initial_balance or float(state["fee_bps"]) != self.fee_bps:
+            raise ValueError("stored paper ledger configuration differs from configured initial balance or fee policy")
+        self.max_order_notional = float(state["max_order_notional"])
+        self.cash = float(state["cash"])
+        self.orders = list(state["orders"])
+        self.positions = dict(state["positions"])
+        self.fills = list(state["fills"])
+        self.realized_pnl = float(state["realized_pnl"])
+        self._client_order_ids = dict(state["client_order_ids"])
 
     @staticmethod
     def _now():
@@ -58,6 +113,7 @@ class PaperLedger:
         self.orders.append(order)
         if client_order_id:
             self._client_order_ids[client_order_id] = order["order_id"]
+        self._persist()
         return dict(order)
 
     def _get_order(self, order_id):
@@ -105,6 +161,7 @@ class PaperLedger:
             "gross_value": round(gross, 2), "fees": round(fee, 2),
             "timestamp": self._now(), "classification": "SIMULATED_PAPER_FILL"
         })
+        self._persist()
         return dict(order)
 
     def cancel(self, order_id):
@@ -113,6 +170,7 @@ class PaperLedger:
             raise ValueError("only ACCEPTED paper orders can be cancelled")
         order.update({"status": "CANCELLED", "updated_at": self._now(),
                       "message": "Cancelled in paper ledger; no broker order was sent."})
+        self._persist()
         return dict(order)
 
     def record(self, side, quantity, reference_price):
@@ -136,5 +194,11 @@ class PaperLedger:
             "positions": {k: dict(v) for k, v in self.positions.items() if v["quantity"] != 0},
             "orders": [dict(o) for o in self.orders],
             "fills": [dict(f) for f in self.fills],
-            "real_orders_enabled": False
+            "real_orders_enabled": False,
+            "persistence": {
+                "engine": "SQLite",
+                "enabled": self.db_path != ":memory:",
+                "database_path_configured": self.db_path != ":memory:",
+                "durability_note": "Survives process restarts when database_path is on a mounted persistent disk."
+            }
         }

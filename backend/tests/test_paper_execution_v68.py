@@ -90,3 +90,45 @@ def test_round_trip_realized_pnl_includes_entry_and_exit_fees():
     # 0.10% entry fee = 0.10; 0.10% exit fee = 0.15.
     assert ledger["realized_pnl"] == 49.75
     assert ledger["positions"].get("FEECASE") is None
+
+
+def test_sqlite_ledger_survives_reinstantiation(tmp_path):
+    from app.paper import PaperLedger
+
+    db = tmp_path / "paper-ledger.sqlite3"
+    first = PaperLedger(initial_balance=500000, fee_bps=10, db_path=str(db))
+    order = first.submit("BUY", 1, 100, "PERSIST", "persist-buy")
+    first.fill(order["order_id"], 100)
+
+    second = PaperLedger(initial_balance=500000, fee_bps=10, db_path=str(db))
+    state = second.snapshot()
+    assert state["positions"]["PERSIST"]["quantity"] == 1
+    assert state["orders"][0]["status"] == "FILLED"
+    assert len(state["fills"]) == 1
+    assert state["virtual_balance"] == 499899.90
+    assert state["persistence"]["enabled"] is True
+
+
+def test_sqlite_ledger_persists_cancel_and_idempotency(tmp_path):
+    from app.paper import PaperLedger
+
+    db = tmp_path / "paper-ledger-cancel.sqlite3"
+    first = PaperLedger(db_path=str(db))
+    order = first.submit("BUY", 1, 100, "PERSIST", "same-id")
+    first.cancel(order["order_id"])
+
+    second = PaperLedger(db_path=str(db))
+    duplicate = second.submit("BUY", 1, 100, "PERSIST", "same-id")
+    assert duplicate["order_id"] == order["order_id"]
+    assert duplicate["status"] == "CANCELLED"
+    assert second.snapshot()["orders"][0]["status"] == "CANCELLED"
+
+
+def test_sqlite_ledger_rejects_mismatched_configuration(tmp_path):
+    from app.paper import PaperLedger
+
+    db = tmp_path / "paper-ledger-config.sqlite3"
+    PaperLedger(initial_balance=500000, fee_bps=10, db_path=str(db))
+    import pytest
+    with pytest.raises(ValueError, match="configuration differs"):
+        PaperLedger(initial_balance=250000, fee_bps=10, db_path=str(db))

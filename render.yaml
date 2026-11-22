@@ -5,7 +5,13 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     healthCheckPath: /api/health
+    disk:
+      name: nifty-ai-trader-paper-ledger
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
+      - key: PAPER_LEDGER_DB_PATH
+        value: /var/data/paper_ledger.sqlite3
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: PORT
