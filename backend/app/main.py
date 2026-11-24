@@ -5,6 +5,7 @@ from .paper import PaperLedger
 from .analysis import analyze_closes, ema_crossover_backtest
 from .advanced_analysis import analyze_market_context
 from .multifactor import analyze_factors
+from .setup_levels import build_setup_levels
 from .historical_validation import validate_ohlcv_rows
 from .walk_forward import evaluate_walk_forward
 from .historical_research import analyze_historical_csv as run_historical_csv_research
@@ -22,7 +23,7 @@ from .providers.stream_manager import MarketStreamManager
 from .providers.contracts import parse_tick
 from .providers.nse_mcp import discover_tools, call_readonly_tool
 
-app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="6.9.0")
+app = FastAPI(title="NIFTY AI TRADER PRO — Read-only Market Intelligence", version="7.0.0-alpha1")
 ledger = PaperLedger(500000)
 market_provider = AuthorizedFeedAdapter()
 angel_one_provider = AngelOneMarketDataAdapter()
@@ -81,7 +82,7 @@ async def nse_public_query(payload: dict):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "6.9.0",
+    return {"status": "ok", "service": "nifty-ai-trader-pro-backend", "version": "7.0.0-alpha1",
             "mode": "EDUCATIONAL_PAPER_ONLY", "real_orders_enabled": False, "virtual_capital": 500000}
 
 @app.get("/api/providers/status")
@@ -194,7 +195,7 @@ async def v6_stream_health():
     snapshot = stream_manager.latest_snapshot()
     event_states = {symbol: event["freshness"] for symbol, event in snapshot["events"].items()}
     return {
-        "app_version": "6.9.0",
+        "app_version": "7.0.0-alpha1",
         "stream_status": snapshot["status"],
         "connected_clients": status["connected_clients"],
         "symbols_cached": status["symbols_cached"],
@@ -213,7 +214,7 @@ async def v6_stream_health():
 async def v6_diagnostics():
     """Operational diagnostics for the read-only stream; no credentials or orders."""
     return {
-        "app_version": "6.9.0",
+        "app_version": "7.0.0-alpha1",
         "mode": "EDUCATIONAL_PAPER_ONLY",
         "stream": stream_manager.status(),
         "provider_connections": {
@@ -229,7 +230,7 @@ async def v6_diagnostics():
 @app.get("/api/v5/integration-status")
 async def integration_status():
     return {
-        "app_version": "6.9.0",
+        "app_version": "7.0.0-alpha1",
         "integration_foundation": "READY_FOR_PROVIDER_IMPLEMENTATION",
         "angel_one": await angel_one_provider.status(),
         "authorized_provider": market_provider.status(),
@@ -375,6 +376,15 @@ async def walk_forward_research(payload: WalkForwardRequest):
     """Chronological next-bar classification diagnostics; no orders or trading advice."""
     try:
         return evaluate_walk_forward(payload.close_prices, payload.min_history)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v7/analysis/setup-levels")
+async def v7_setup_levels(payload: CandleSeries):
+    """Return hypothetical entry/retracement/stop/target references for paper research only."""
+    try:
+        return build_setup_levels(payload.high, payload.low, payload.close, payload.volume)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
