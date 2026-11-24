@@ -1,3 +1,4 @@
+
 name: Build NIFTY AI TRADER PRO V7.0 Alpha 1
 
 on:
@@ -10,8 +11,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
         with:
           persist-credentials: true
 
@@ -19,62 +22,100 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           ZIP_FILE="NIFTY_AI_TRADER_PRO_V7_0_ALPHA1.zip"
-          test -f "$ZIP_FILE"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::V7.0 Alpha 1 ZIP not found."
+            exit 1
+          fi
+
           mkdir -p /tmp/nifty-v7
           unzip -q "$ZIP_FILE" -d /tmp/nifty-v7
+
           PROJECT_DIR="/tmp/nifty-v7/NIFTY_AI_TRADER_PRO_V5"
+
           test -f "$PROJECT_DIR/backend/app/setup_levels.py"
+          test -f "$PROJECT_DIR/backend/requirements.txt"
+          test -f "$PROJECT_DIR/settings.gradle.kts"
+          test -f "$PROJECT_DIR/app/build.gradle.kts"
+
           cp -a "$PROJECT_DIR"/. .
 
-        - name: Commit extracted V7.0 source
+          test -f backend/app/setup_levels.py
+          test -f app/src/main/AndroidManifest.xml
+
+      - name: Commit extracted V7.0 source
         shell: bash
         run: |
           set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -A
+
+          # Do not modify workflow files through the Actions token.
+          git reset -q -- .github/workflows/ || true
+
           if git diff --cached --quiet; then
             echo "No source changes to commit."
           else
-            git commit -m "Add NIFTY AI TRADER PRO V7.0 Alpha 1 paper analysis foundation [skip ci]"
+            git commit -m "Add NIFTY AI TRADER PRO V7.0 Alpha 1 source [skip ci]"
             git push origin HEAD:main
           fi
 
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Run backend tests
-        env:
-          PYTHONPATH: backend
+      - name: Install backend dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -r backend/requirements.txt
+          python -m pip install pytest
+
+      - name: Run backend regression tests
+        env:
+          PYTHONPATH: backend
+        shell: bash
+        run: |
+          set -euo pipefail
           python -m pytest -q backend/tests
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android platform
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Install Android platform and build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          gradle-version: "8.7"
 
       - name: Build debug APK
-        run: gradle --no-daemon --stacktrace -PAPI_BASE_URL="https://nifty-ai-trader-pro.onrender.com" assembleDebug
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --stacktrace \
+            -PAPI_BASE_URL="https://nifty-ai-trader-pro.onrender.com" \
+            assembleDebug
 
-      - name: Upload APK
+      - name: Upload V7.0 Alpha 1 APK
         uses: actions/upload-artifact@v4
         with:
           name: NIFTY-AI-TRADER-PRO-V7.0-alpha1-debug
