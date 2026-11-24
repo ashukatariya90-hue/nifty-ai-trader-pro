@@ -27,7 +27,7 @@ jobs:
           test -f "$PROJECT_DIR/backend/app/setup_levels.py"
           cp -a "$PROJECT_DIR"/. .
 
-      - name: Commit extracted V7.0 source
+        - name: Commit extracted V7.0 source
         shell: bash
         run: |
           set -euo pipefail
