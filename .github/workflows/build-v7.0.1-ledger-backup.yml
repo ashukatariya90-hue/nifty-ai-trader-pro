@@ -1,0 +1,108 @@
+name: Build V7.0.1 Ledger Backup APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract V7.0.1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="NIFTY_AI_TRADER_PRO_V7_0_1_LEDGER_BACKUP.zip"
+          test -f "$ZIP"
+          mkdir -p source
+          unzip -q "$ZIP" -d source
+          PROJECT="source/NIFTY_AI_TRADER_PRO_V5"
+          test -f "$PROJECT/settings.gradle.kts"
+          test -f "$PROJECT/app/build.gradle.kts"
+          cp -a "$PROJECT"/. .
+          test -f app/src/main/java/com/example/niftyaitrader/MainActivity.kt
+          grep -q 'backupText' app/src/main/java/com/example/niftyaitrader/MainActivity.kt
+          grep -q 'paper-ledger' app/src/main/java/com/example/niftyaitrader/MainActivity.kt
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Restore stable debug signing key
+        uses: actions/cache@v4
+        with:
+          path: .ci/debug.keystore
+          key: nifty-trader-v7-debug-signing-v1
+
+      - name: Create debug signing key if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci
+          if [ ! -f .ci/debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore .ci/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Configure version and signing
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("app/build.gradle.kts")
+          s = p.read_text()
+          s = s.replace("versionCode = 70", "versionCode = 71")
+          s = s.replace('versionName = "7.0.0-alpha1"', 'versionName = "7.0.1"')
+          marker = "    buildFeatures { compose = true; buildConfig = true }"
+          signing = """    signingConfigs {
+                  getByName("debug") {
+                      storeFile = rootProject.file(".ci/debug.keystore")
+                      storePassword = "android"
+                      keyAlias = "androiddebugkey"
+                      keyPassword = "android"
+                  }
+              }
+              buildTypes {
+                  getByName("debug") {
+                      signingConfig = signingConfigs.getByName("debug")
+                  }
+              }
+          """
+          if ".ci/debug.keystore" not in s:
+              if marker not in s:
+                  raise SystemExit("Gradle insertion point not found")
+              s = s.replace(marker, signing + marker, 1)
+          if "versionCode = 71" not in s:
+              raise SystemExit("Version code update failed")
+          p.write_text(s)
+          PY
+
+      - name: Build debug APK
+        run: gradle --no-daemon --stacktrace -PAPI_BASE_URL=https://nifty-ai-trader-pro.onrender.com assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NIFTY-AI-TRADER-PRO-V7.0.1-ledger-backup
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
