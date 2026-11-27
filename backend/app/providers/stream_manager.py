@@ -2,19 +2,15 @@
 import asyncio
 from datetime import datetime, timezone
 
-
 class MarketStreamManager:
     def __init__(self):
         self.clients = set()
         self.latest = {}
         self._lock = asyncio.Lock()
-        self._metrics = {
-            "accepted_events": 0,
-            "rejected_out_of_order_events": 0,
-            "broadcast_failures": 0,
-        }
+        self._metrics = {"accepted_events": 0, "rejected_out_of_order_events": 0,
+                         "rejected_stale_events": 0, "broadcast_failures": 0,
+                         "heartbeat_messages_sent": 0}
         self._last_event = None
-        self._metrics["heartbeat_messages_sent"] = 0
         self._client_connected_at = {}
 
     async def connect(self, websocket):
@@ -29,31 +25,29 @@ class MarketStreamManager:
             self._client_connected_at.pop(websocket, None)
 
     async def publish(self, tick):
-        """Cache and broadcast only newer events; return False for stale ordering."""
+        """Reject stale live ticks; explicitly delayed historical replays remain allowed."""
         async with self._lock:
+            if tick.freshness == "CLOCK_SKEW" or (tick.freshness == "STALE" and not tick.delayed):
+                self._metrics["rejected_stale_events"] += 1
+                return False
             previous = self.latest.get(tick.symbol)
             if previous and tick.exchange_timestamp <= previous.exchange_timestamp:
                 self._metrics["rejected_out_of_order_events"] += 1
                 return False
             self.latest[tick.symbol] = tick
             self._metrics["accepted_events"] += 1
-            self._last_event = {
-                "symbol": tick.symbol,
-                "source": tick.source,
+            self._last_event = {"symbol": tick.symbol, "source": tick.source,
                 "exchange_timestamp": tick.exchange_timestamp.isoformat(),
                 "received_timestamp": tick.received_timestamp.isoformat(),
-                "delayed": bool(tick.delayed),
-            }
+                "delayed": bool(tick.delayed), "freshness": tick.freshness,
+                "data_classification": getattr(tick, "data_classification", "UNKNOWN_SOURCE")}
             clients = list(self.clients)
-        payload = {
-            "type": "market_tick", "symbol": tick.symbol,
-            "last_price": tick.last_price,
+        payload = {"type": "market_tick", "symbol": tick.symbol, "last_price": tick.last_price,
             "exchange_timestamp": tick.exchange_timestamp.isoformat(),
-            "received_timestamp": tick.received_timestamp.isoformat(),
-            "source": tick.source, "delayed": tick.delayed,
-            "freshness": tick.freshness, "read_only": True,
-            "real_orders_enabled": False,
-        }
+            "received_timestamp": tick.received_timestamp.isoformat(), "source": tick.source,
+            "delayed": tick.delayed, "freshness": tick.freshness,
+            "data_classification": getattr(tick, "data_classification", "UNKNOWN_SOURCE"),
+            "read_only": True, "real_orders_enabled": False}
         for ws in clients:
             try:
                 await ws.send_json(payload)
@@ -65,27 +59,16 @@ class MarketStreamManager:
         return True
 
     async def clear(self, symbol=None):
-        """Clear cached events before starting a distinct replay session."""
         async with self._lock:
             if symbol is None:
                 self.latest.clear()
                 self._last_event = None
             else:
-                self.latest.pop(symbol.upper(), None)
-                if self._last_event and self._last_event["symbol"] == symbol.upper():
-                    remaining = list(self.latest.values())
-                    if remaining:
-                        tick = max(remaining, key=lambda item: item.exchange_timestamp)
-                        self._last_event = {
-                            "symbol": tick.symbol, "source": tick.source,
-                            "exchange_timestamp": tick.exchange_timestamp.isoformat(),
-                            "received_timestamp": tick.received_timestamp.isoformat(),
-                            "delayed": bool(tick.delayed),
-                        }
-                    else:
-                        self._last_event = None
+                key = symbol.upper()
+                self.latest.pop(key, None)
+                if self._last_event and self._last_event["symbol"] == key:
+                    self._last_event = None
         self._metrics["heartbeat_messages_sent"] = 0
-        self._client_connected_at = {}
 
     def latest_snapshot(self, symbol=None):
         now = datetime.now(timezone.utc)
@@ -94,21 +77,15 @@ class MarketStreamManager:
         events = {}
         for key, tick in selected.items():
             age = (now - tick.exchange_timestamp).total_seconds()
-            freshness = "DELAYED" if tick.delayed else (
-                "CLOCK_SKEW" if age < -60 else "FRESH" if age <= 15 else "STALE"
-            )
-            events[key] = {
-                "symbol": tick.symbol,
-                "last_price": tick.last_price,
+            freshness = "DELAYED" if tick.delayed else ("CLOCK_SKEW" if age < -60 else "FRESH" if age <= 15 else "STALE")
+            events[key] = {"symbol": tick.symbol, "last_price": tick.last_price,
                 "exchange_timestamp": tick.exchange_timestamp.isoformat(),
-                "received_timestamp": tick.received_timestamp.isoformat(),
-                "source": tick.source,
+                "received_timestamp": tick.received_timestamp.isoformat(), "source": tick.source,
                 "freshness": freshness,
-                "read_only": True,
-            }
-        return {"status": "AVAILABLE" if events else "OFFLINE_NO_EVENTS",
-                "events": events, "read_only": True,
-                "real_orders_enabled": False}
+                "data_classification": getattr(tick, "data_classification", "UNKNOWN_SOURCE"),
+                "read_only": True}
+        return {"status": "AVAILABLE" if events else "OFFLINE_NO_EVENTS", "events": events,
+                "read_only": True, "real_orders_enabled": False}
 
     def status(self):
         now = datetime.now(timezone.utc)
@@ -118,18 +95,10 @@ class MarketStreamManager:
                 stamp = datetime.fromisoformat(self._last_event["exchange_timestamp"])
                 latest_age = round((now - stamp).total_seconds(), 3)
             except (TypeError, ValueError):
-                latest_age = None
-        return {
-            "connected_clients": len(self.clients),
-            "symbols_cached": len(self.latest),
+                pass
+        return {"connected_clients": len(self.clients), "symbols_cached": len(self.latest),
             "heartbeat_interval_seconds": 20,
-            "oldest_client_connection_age_seconds": (
-                round(min((now - stamp).total_seconds() for stamp in self._client_connected_at.values()), 3)
-                if self._client_connected_at else None
-            ),
-            "metrics": dict(self._metrics),
-            "last_event": dict(self._last_event) if self._last_event else None,
-            "latest_event_age_seconds": latest_age,
-            "diagnostics_scope": "IN_PROCESS_READ_ONLY_STREAM",
-            "real_orders_enabled": False,
-        }
+            "oldest_client_connection_age_seconds": round(min((now-s).total_seconds() for s in self._client_connected_at.values()), 3) if self._client_connected_at else None,
+            "metrics": dict(self._metrics), "last_event": dict(self._last_event) if self._last_event else None,
+            "latest_event_age_seconds": latest_age, "diagnostics_scope": "IN_PROCESS_READ_ONLY_STREAM",
+            "real_orders_enabled": False}
