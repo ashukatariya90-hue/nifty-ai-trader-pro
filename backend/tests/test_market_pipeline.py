@@ -1,4 +1,3 @@
-
 import asyncio
 from datetime import datetime, timedelta, timezone
 
@@ -61,8 +60,8 @@ def test_stale_event_is_rejected():
 def test_out_of_order_event_is_rejected():
     async def run():
         manager = MarketStreamManager()
-
         first = make_tick(price=25000)
+
         second = parse_tick(
             {
                 "symbol": "NIFTY",
@@ -77,8 +76,9 @@ def test_out_of_order_event_is_rejected():
         assert await manager.publish(first) is True
         assert await manager.publish(second) is False
 
-        assert manager.status()["metrics"]["accepted_events"] == 1
-        assert manager.status()["metrics"]["rejected_out_of_order_events"] == 1
+        metrics = manager.status()["metrics"]
+        assert metrics["accepted_events"] == 1
+        assert metrics["rejected_out_of_order_events"] == 1
 
     asyncio.run(run())
 
@@ -87,6 +87,9 @@ def test_websocket_receives_simulated_event():
     class FakeWebSocket:
         def __init__(self):
             self.messages = []
+
+        async def accept(self):
+            pass
 
         async def send_json(self, payload):
             self.messages.append(payload)
